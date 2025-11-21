@@ -557,8 +557,12 @@ class VirtualScroll {
     this.measuredHeights.clear();
     this.heightAdjusted = false;
     this.content.innerHTML = '';
-    this.render();
-    requestAnimationFrame(() => this.measureAndAdjust());
+    this.visibleStart = -1; // Force re-render
+    this.visibleEnd = -1;
+    requestAnimationFrame(() => {
+      this.render();
+      this.measureAndAdjust();
+    });
   }
   
   destroy() {
