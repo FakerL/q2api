@@ -1,803 +1,522 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8"/>
-  <title>Amazonq2api 前端控制台 · 账号管理 + Chat 测试</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <meta charset="utf-8" />
+  <title>Q2API 控制台</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
+    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
     :root {
-      --bg:#0a0e1a;
-      --panel:#0f1420;
-      --muted:#8b95a8;
-      --text:#e8f0ff;
-      --accent:#4f8fff;
-      --danger:#ff4757;
-      --ok:#2ed573;
-      --warn:#ffa502;
-      --border:#1a2332;
-      --chip:#141b28;
-      --code:#0d1218;
-      --glow:rgba(79,143,255,.15);
+      --bg:#f7f7f7;
+      --ink:#0f0f0f;
+      --muted:#555;
+      --line:#dedede;
+      --panel:#fff;
+      --soft:#f2f2f2;
+      --shadow:0 14px 48px rgba(0,0,0,0.08);
+      --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+      --sans:'Space Grotesk','Inter','Noto Sans SC',system-ui,-apple-system,sans-serif;
     }
     * { box-sizing:border-box; }
-    html, body { height:100%; margin:0; }
-    body {
-      padding:0 0 40px;
-      background:radial-gradient(ellipse at top, #0f1624 0%, #0a0e1a 100%);
-      color:var(--text);
-      font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,PingFang SC,Hiragino Sans GB,Microsoft YaHei,Noto Sans,Arial,sans-serif;
-      line-height:1.6;
-    }
-    h1,h2,h3 { font-weight:700; letter-spacing:-.02em; margin:0; }
-    h1 { font-size:28px; margin:24px 0 12px; background:linear-gradient(135deg,#4f8fff,#7b9fff); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
-    h2 { font-size:18px; margin:20px 0 16px; color:#c5d4ff; }
-    h3 { font-size:15px; margin:16px 0 10px; color:#a8b8d8; }
-    .container { max-width:1280px; margin:0 auto; padding:20px; }
-    .grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
-    @media(max-width:1024px){ .grid { grid-template-columns:1fr; } }
-    .panel {
-      background:linear-gradient(145deg,rgba(15,20,32,.8),rgba(10,14,26,.9));
-      border:1px solid var(--border);
-      border-radius:16px;
-      padding:24px;
-      box-shadow:0 20px 60px rgba(0,0,0,.4),0 0 0 1px rgba(79,143,255,.08),inset 0 1px 0 rgba(255,255,255,.03);
-      backdrop-filter:blur(12px);
-      transition:transform .2s,box-shadow .2s;
-    }
-    .panel:hover { transform:translateY(-2px); box-shadow:0 24px 70px rgba(0,0,0,.5),0 0 0 1px rgba(79,143,255,.12),inset 0 1px 0 rgba(255,255,255,.04); }
-    .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
-    label { color:var(--muted); font-size:13px; font-weight:500; letter-spacing:.01em; }
-    .field { display:flex; flex-direction:column; gap:8px; flex:1; min-width:200px; }
-    input,textarea,select {
-      background:rgba(12,16,28,.6);
-      color:var(--text);
-      border:1px solid var(--border);
-      border-radius:12px;
-      padding:12px 14px;
-      outline:none;
-      transition:all .2s;
-      font-size:14px;
-      box-shadow:inset 0 1px 2px rgba(0,0,0,.2);
-    }
-    input:focus,textarea:focus,select:focus {
-      border-color:var(--accent);
-      box-shadow:0 0 0 3px var(--glow),inset 0 1px 2px rgba(0,0,0,.2);
-      background:rgba(12,16,28,.8);
-    }
-    textarea { min-height:140px; resize:vertical; font-family:ui-monospace,monospace; }
-    button {
-      background:linear-gradient(135deg,#2563eb,#1e40af);
-      color:#fff;
-      border:none;
-      border-radius:12px;
-      padding:12px 20px;
-      font-weight:600;
-      font-size:14px;
-      cursor:pointer;
-      transition:all .2s;
-      box-shadow:0 4px 16px rgba(37,99,235,.3),inset 0 1px 0 rgba(255,255,255,.1);
-      position:relative;
-      overflow:hidden;
-    }
-    button:before {
-      content:'';
-      position:absolute;
-      top:0;left:0;right:0;bottom:0;
-      background:linear-gradient(135deg,rgba(255,255,255,.1),transparent);
-      opacity:0;
-      transition:opacity .2s;
-    }
-    button:hover { transform:translateY(-1px); box-shadow:0 6px 20px rgba(37,99,235,.4),inset 0 1px 0 rgba(255,255,255,.15); }
-    button:hover:before { opacity:1; }
-    button:active { transform:translateY(0); }
-    button:disabled { opacity:.5; cursor:not-allowed; transform:none; }
-    .btn-secondary { background:linear-gradient(135deg,#1e293b,#0f172a); box-shadow:0 4px 16px rgba(15,23,42,.3),inset 0 1px 0 rgba(255,255,255,.05); }
-    .btn-secondary:hover { box-shadow:0 6px 20px rgba(15,23,42,.4),inset 0 1px 0 rgba(255,255,255,.08); }
-    .btn-danger { background:linear-gradient(135deg,#dc2626,#991b1b); box-shadow:0 4px 16px rgba(220,38,38,.3),inset 0 1px 0 rgba(255,255,255,.1); }
-    .btn-danger:hover { box-shadow:0 6px 20px rgba(220,38,38,.4),inset 0 1px 0 rgba(255,255,255,.15); }
-    .btn-warn { background:linear-gradient(135deg,#f59e0b,#d97706); box-shadow:0 4px 16px rgba(245,158,11,.3),inset 0 1px 0 rgba(255,255,255,.1); }
-    .btn-warn:hover { box-shadow:0 6px 20px rgba(245,158,11,.4),inset 0 1px 0 rgba(255,255,255,.15); }
-    .kvs { display:grid; grid-template-columns:160px 1fr; gap:10px 16px; font-size:13px; }
-    .muted { color:var(--muted); }
-    .chip {
-      display:inline-flex;
-      align-items:center;
-      gap:6px;
-      padding:6px 12px;
-      background:rgba(20,27,40,.8);
-      border:1px solid var(--border);
-      border-radius:20px;
-      color:#a8b8ff;
-      font-size:12px;
-      font-weight:500;
-      box-shadow:0 2px 8px rgba(0,0,0,.2);
-    }
-    .list { position:relative; max-height:600px; overflow:auto; padding:2px; }
-    .list::-webkit-scrollbar { width:8px; }
-    .list::-webkit-scrollbar-track { background:rgba(0,0,0,.2); border-radius:4px; }
-    .list::-webkit-scrollbar-thumb { background:rgba(79,143,255,.3); border-radius:4px; }
-    .list::-webkit-scrollbar-thumb:hover { background:rgba(79,143,255,.5); }
-    .list-viewport { position:relative; }
-    .list-content { display:flex; flex-direction:column; gap:12px; }
-    .card {
-      border:1px solid var(--border);
-      border-radius:14px;
-      padding:16px;
-      background:linear-gradient(145deg,rgba(12,19,34,.6),rgba(10,14,26,.8));
-      display:flex;
-      flex-direction:column;
-      gap:12px;
-      box-shadow:0 4px 16px rgba(0,0,0,.3),inset 0 1px 0 rgba(255,255,255,.02);
-      transition:all .2s;
-    }
-    .card:hover { border-color:rgba(79,143,255,.3); box-shadow:0 6px 20px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.03); }
-    .mono { font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; }
-    .code {
-      background:var(--code);
-      border:1px solid var(--border);
-      border-radius:12px;
-      padding:14px;
-      color:#d8e8ff;
-      max-height:300px;
-      overflow:auto;
-      white-space:pre-wrap;
-      font-size:13px;
-      line-height:1.6;
-      box-shadow:inset 0 2px 4px rgba(0,0,0,.3);
-    }
-    .code::-webkit-scrollbar { width:8px; height:8px; }
-    .code::-webkit-scrollbar-track { background:rgba(0,0,0,.2); border-radius:4px; }
-    .code::-webkit-scrollbar-thumb { background:rgba(79,143,255,.3); border-radius:4px; }
-    .right { margin-left:auto; }
-    .sep { height:1px; background:linear-gradient(90deg,transparent,rgba(79,143,255,.2),transparent); margin:16px 0; }
-    .status-ok { color:var(--ok); font-weight:600; }
-    .status-fail { color:var(--danger); font-weight:600; }
-    .switch { position:relative; display:inline-block; width:50px; height:26px; }
-    .switch input { opacity:0; width:0; height:0; }
-    .slider {
-      position:absolute;
-      cursor:pointer;
-      top:0;left:0;right:0;bottom:0;
-      background:linear-gradient(135deg,#374151,#1f2937);
-      transition:.3s;
-      border-radius:26px;
-      border:1px solid var(--border);
-      box-shadow:inset 0 2px 4px rgba(0,0,0,.3);
-    }
-    .slider:before {
-      position:absolute;
-      content:"";
-      height:20px;
-      width:20px;
-      left:3px;
-      bottom:2px;
-      background:linear-gradient(135deg,#f3f4f6,#e5e7eb);
-      transition:.3s;
-      border-radius:50%;
-      box-shadow:0 2px 6px rgba(0,0,0,.3);
-    }
-    input:checked+.slider { background:linear-gradient(135deg,#3b82f6,#2563eb); box-shadow:0 0 12px rgba(59,130,246,.4),inset 0 2px 4px rgba(0,0,0,.2); }
-    input:checked+.slider:before { transform:translateX(24px); }
-    @keyframes fadeIn { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
-    .panel { animation:fadeIn .4s ease-out; }
-    .tabs { display:flex; gap:8px; margin:20px 0 16px; border-bottom:2px solid var(--border); }
-    .tab { padding:12px 24px; background:transparent; border:none; color:var(--muted); font-weight:600; font-size:14px; cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-2px; transition:all .2s; }
-    .tab:hover { color:var(--text); background:rgba(79,143,255,.05); }
-    .tab.active { color:var(--accent); border-bottom-color:var(--accent); }
-    .tab-content { display:none; }
-    .tab-content.active { display:block; }
+    html,body { height:100%; margin:0; }
+    body { background:var(--bg); color:var(--ink); font-family:var(--sans); line-height:1.5; padding:18px; }
+    .page { max-width:1280px; margin:0 auto 48px; display:flex; flex-direction:column; gap:16px; }
+    .masthead { background:var(--panel); border:1px solid var(--line); padding:16px 18px; box-shadow:var(--shadow); display:flex; align-items:center; justify-content:space-between; gap:10px; }
+    .title h1 { margin:0; font-size:24px; letter-spacing:-0.02em; }
+    .title p { margin:4px 0 0; color:var(--muted); font-size:13px; }
+    .status-bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    .pill { border:1px solid var(--line); padding:6px 10px; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; background:var(--soft); color:var(--muted); min-width:110px; text-align:center; }
+    .pill.ok { color:var(--ink); background:#e7e7e7; }
+    .pill.bad { border-style:dashed; }
+    .btn { border:1px solid #111; background:#111; color:#fff; padding:9px 12px; font-weight:600; font-size:13px; cursor:pointer; border-radius:2px; transition:transform .1s ease, box-shadow .15s ease; }
+    .btn:hover { transform:translateY(-1px); box-shadow:0 10px 26px rgba(0,0,0,0.18); }
+    .btn:active { transform:translateY(0); }
+    .btn:disabled { opacity:.5; cursor:not-allowed; box-shadow:none; transform:none; }
+    .ghost { background:#fff; color:#111; border-color:var(--line); }
+    .tabs { display:flex; gap:10px; flex-wrap:wrap; }
+    .tab-btn { border:1px solid var(--line); background:#fff; padding:10px 14px; cursor:pointer; font-weight:600; letter-spacing:0.01em; }
+    .tab-btn.active { background:#111; color:#fff; border-color:#111; }
+    .tab { display:none; background:var(--panel); border:1px solid var(--line); box-shadow:var(--shadow); padding:16px; }
+    .tab.active { display:block; }
+    .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    .field { display:flex; flex-direction:column; gap:6px; flex:1; min-width:200px; }
+    .field label { font-size:12px; text-transform:uppercase; letter-spacing:0.08em; color:var(--muted); }
+    input, textarea, select { width:100%; border:1px solid var(--line); background:#fdfdfd; color:var(--ink); padding:10px 12px; font-family:var(--sans); font-size:14px; border-radius:2px; transition:border .15s ease, box-shadow .15s ease; }
+    input:focus, textarea:focus, select:focus { outline:none; border-color:#111; box-shadow:0 0 0 2px #e5e5e5; }
+    textarea { min-height:160px; resize:vertical; font-family:var(--mono); }
+    .list { display:flex; flex-direction:column; gap:12px; }
+    .card { border:1px solid var(--line); padding:14px; background:#fff; display:flex; flex-direction:column; gap:10px; }
+    .card-head { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .badge { border:1px solid var(--line); padding:6px 8px; font-size:12px; background:var(--soft); }
+    .meta-grid { display:grid; grid-template-columns:140px 1fr; gap:6px 10px; font-size:13px; }
+    .meta-grid .key { color:var(--muted); text-transform:uppercase; letter-spacing:0.08em; font-size:12px; }
+    .meta-grid .value { white-space:pre-wrap; word-break:break-word; font-family:var(--mono); }
+    .code-block { border:1px dashed var(--line); background:#fafafa; padding:10px; font-family:var(--mono); white-space:pre-wrap; font-size:13px; overflow:hidden; text-overflow:ellipsis; }
+    .actions { display:flex; gap:8px; flex-wrap:wrap; }
+    .log { max-height:360px; overflow:auto; border:1px solid var(--line); background:#fff; padding:10px; font-family:var(--mono); white-space:pre-wrap; }
+    .log div { padding:4px 0; border-bottom:1px solid #f1f1f1; }
+    .log div:last-child { border-bottom:none; }
+    .status-line { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .small { font-size:12px; color:var(--muted); }
+    .toast { position:fixed; bottom:18px; left:18px; padding:10px 14px; border:1px solid #111; background:#111; color:#fff; font-size:14px; box-shadow:0 8px 30px rgba(0,0,0,0.2); opacity:0.95; z-index:50; }
+    .toast.light { background:#fff; color:#111; }
+    .vstack { display:flex; flex-direction:column; gap:12px; }
+    .hidden { display:none; }
+    .collapse-toggle { margin-left:auto; }
+    .auth-stack { gap:16px; margin-top:10px; }
   </style>
 </head>
 <body>
-  <div class="container">
-    <h1>Q2api 前端控制台</h1>
-
-    <div class="tabs">
-      <button class="tab active" onclick="switchTab('accounts')">账号管理</button>
-      <button class="tab" onclick="switchTab('create')">创建账号</button>
-      <button class="tab" onclick="switchTab('login')">URL登录</button>
-      <button class="tab" onclick="switchTab('chat')">Chat测试</button>
-    </div>
-
-    <div id="tab-accounts" class="tab-content active">
-      <div class="panel">
-        <h2>账号管理</h2>
-        <div class="row">
-          <button class="btn-secondary" onclick="loadAccounts()">刷新列表</button>
-        </div>
-        <div class="list" id="accounts"></div>
+  <div class="page">
+    <header class="masthead">
+      <div class="title">
+        <h1>Q2API 控制台</h1>
       </div>
-    </div>
+      <div class="status-bar">
+        <div class="pill bad" id="authStatus">未验证</div>
+        <div class="small" id="authHint">未登录会自动跳转到 /login。</div>
+        <button class="ghost btn" id="clearAuth">清除凭证</button>
+      </div>
+    </header>
 
-    <div id="tab-create" class="tab-content">
-      <div class="panel">
-        <h2>创建账号</h2>
-        <div class="row">
-          <div class="field"><label>label</label><input id="new_label" /></div>
-          <div class="field"><label>clientId</label><input id="new_clientId" /></div>
-          <div class="field"><label>clientSecret</label><input id="new_clientSecret" /></div>
+    <nav class="tabs">
+      <button class="tab-btn active" data-tab="accounts">账号列表</button>
+      <button class="tab-btn" data-tab="create">创建账号</button>
+      <button class="tab-btn" data-tab="oauth">URL 登录 / 设备授权</button>
+      <button class="tab-btn" data-tab="chat">Chat 测试</button>
+      <button class="tab-btn" data-tab="logs">操作日志</button>
+    </nav>
+
+    <section class="tab active" id="tab-accounts">
+      <div class="row" style="justify-content:space-between; align-items:flex-start; gap:8px;">
+        <div>
+          <h2>账号列表</h2>
         </div>
-        <div class="row">
-          <div class="field"><label>refreshToken</label><input id="new_refreshToken" /></div>
-          <div class="field"><label>accessToken</label><input id="new_accessToken" /></div>
-        </div>
-        <div class="row">
-          <div class="field">
-            <label>other（JSON，可选）</label>
-            <textarea id="new_other" placeholder='{"note":"备注"}'></textarea>
-          </div>
-          <div class="field" style="max-width:220px">
-            <label>启用（仅启用账号会被用于请求）</label>
-            <div>
-              <label class="switch">
-                <input id="new_enabled" type="checkbox" checked />
-                <span class="slider"></span>
-              </label>
-            </div>
-          </div>
-        </div>
-        <div class="row">
-          <button onclick="createAccount()">创建</button>
+        <div class="actions">
+          <button class="ghost btn" id="reloadAccounts">刷新</button>
         </div>
       </div>
-    </div>
+      <div class="list" id="accountList"></div>
+    </section>
 
-    <div id="tab-login" class="tab-content">
-      <div class="panel">
-        <h2>URL 登录（5分钟超时）</h2>
-        <div class="row">
-          <div class="field"><label>label（可选）</label><input id="auth_label" /></div>
-          <div class="field" style="max-width:220px">
-            <label>启用（登录成功后新账号是否启用）</label>
-            <div>
-              <label class="switch">
-                <input id="auth_enabled" type="checkbox" checked />
-                <span class="slider"></span>
-              </label>
-            </div>
-          </div>
-        </div>
-        <div class="row">
-          <button onclick="startAuth()">开始登录</button>
-          <button class="btn-secondary" onclick="claimAuth()">等待授权并创建账号</button>
-        </div>
+    <section class="tab" id="tab-create">
+      <h2>创建账号</h2>
+      <div class="row">
+        <div class="field"><label>label</label><input id="new_label" /></div>
+        <div class="field"><label>clientId</label><input id="new_clientId" /></div>
+      </div>
+      <div class="row">
+        <div class="field"><label>clientSecret</label><input id="new_clientSecret" type="password" /></div>
+        <div class="field"><label>refreshToken</label><input id="new_refreshToken" /></div>
+      </div>
+      <div class="row">
+        <div class="field"><label>accessToken</label><input id="new_accessToken" /></div>
         <div class="field">
-          <label>登录信息</label>
-          <pre class="code mono" id="auth_info">尚未开始</pre>
+          <label>启用</label>
+          <select id="new_enabled">
+            <option value="true" selected>true</option>
+            <option value="false">false</option>
+          </select>
         </div>
       </div>
-    </div>
+      <div class="field">
+        <label>other（JSON，可选）</label>
+        <textarea id="new_other" placeholder='{"note":"备注"}'></textarea>
+      </div>
+      <div class="actions">
+        <button class="btn" id="createBtn">创建</button>
+      </div>
+    </section>
 
-    <div id="tab-chat" class="tab-content">
-      <div class="panel">
-        <h2>Chat 测试（OpenAI 兼容 /v1/chat/completions）</h2>
-        <div class="row">
-          <div class="field" style="max-width:300px">
-            <label>model</label>
-            <input id="model" value="claude-sonnet-4" />
-          </div>
-          <div class="field" style="max-width:180px">
-            <label>是否流式</label>
-            <select id="stream">
-              <option value="false">false（默认）</option>
-              <option value="true">true（SSE）</option>
-            </select>
-          </div>
-          <button class="right" onclick="send()">发送请求</button>
+    <section class="tab" id="tab-oauth">
+      <h2>URL 登录 / 设备授权</h2>
+      <div class="row">
+        <div class="field"><label>label（可选）</label><input id="auth_label" /></div>
+        <div class="field"><label>登录后启用</label>
+          <select id="auth_enabled">
+            <option value="true" selected>true</option>
+            <option value="false">false</option>
+          </select>
         </div>
-        <div class="field">
-          <label>messages（JSON）</label>
-          <textarea id="messages">[
+      </div>
+      <div class="vstack auth-stack">
+        <div class="actions">
+          <button class="btn" id="startAuth">开始登录并等待 token</button>
+        </div>
+        <div class="status-line">
+          <div class="pill bad" id="authState">未开始</div>
+          <div class="small" id="authTimer">等待操作</div>
+        </div>
+        <pre class="code-block" id="auth_info">尚未开始</pre>
+      </div>
+    </section>
+
+    <section class="tab" id="tab-chat">
+      <h2>Chat 测试 (/v1/chat/completions)</h2>
+      <div class="row">
+        <div class="field"><label>model</label><input id="model" value="claude-sonnet-4" /></div>
+        <div class="field"><label>是否流式</label>
+          <select id="stream">
+            <option value="false">false</option>
+            <option value="true">true</option>
+          </select>
+        </div>
+        <div class="field" style="flex:0 0 160px;"><label>&nbsp;</label><button class="btn" id="sendBtn">发送请求</button></div>
+      </div>
+      <div class="field">
+        <label>messages（JSON）</label>
+        <textarea id="messages">[
   {"role":"system","content":"你是一个乐于助人的助手"},
-  {"role":"user","content":"你好，请讲一个简短的故事"}
+  {"role":"user","content":"你好，请讲一个简短的故事\n并分两段输出"}
 ]</textarea>
-        </div>
-        <div class="field">
-          <label>响应</label>
-          <pre class="code mono" id="out"></pre>
-        </div>
       </div>
-    </div>
+      <div class="field">
+        <label>响应</label>
+        <pre class="code-block" id="out"></pre>
+      </div>
+    </section>
+
+    <section class="tab" id="tab-logs">
+      <h2>操作日志</h2>
+      <p class="small">记录本地操作和接口反馈。</p>
+      <div class="log" id="log"></div>
+    </section>
   </div>
 
-
 <script>
-function switchTab(name) {
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-  event.target.classList.add('active');
-  document.getElementById('tab-' + name).classList.add('active');
+const state = {
+  password: localStorage.getItem('adminPassword') || '',
+  accounts: [],
+  authSession: null,
+  authTicker: null,
+  authWaitTicker: null,
+  logs: [],
+};
+
+const els = {
+  authStatus: document.getElementById('authStatus'),
+  authHint: document.getElementById('authHint'),
+  clearAuth: document.getElementById('clearAuth'),
+  reloadAccounts: document.getElementById('reloadAccounts'),
+  createBtn: document.getElementById('createBtn'),
+  accountList: document.getElementById('accountList'),
+  authLabel: document.getElementById('auth_label'),
+  authEnabled: document.getElementById('auth_enabled'),
+  authInfo: document.getElementById('auth_info'),
+  authState: document.getElementById('authState'),
+  authTimer: document.getElementById('authTimer'),
+  startAuth: document.getElementById('startAuth'),
+  model: document.getElementById('model'),
+  stream: document.getElementById('stream'),
+  messages: document.getElementById('messages'),
+  sendBtn: document.getElementById('sendBtn'),
+  out: document.getElementById('out'),
+  log: document.getElementById('log'),
+};
+
+function setAuthVisual(status, hint) {
+  const pill = els.authStatus;
+  pill.classList.remove('ok','bad');
+  pill.classList.add(status === 'ok' ? 'ok' : 'bad');
+  pill.textContent = status === 'ok' ? '已验证' : '未验证';
+  if (hint) els.authHint.textContent = hint;
 }
 
-function api(path){
-  const pathClean = ('/' + (path || '').replace(/^\/+/, '')).replace(/\/{2,}/g, '/');
-  return pathClean;
+function log(message) {
+  const ts = new Date().toLocaleTimeString();
+  state.logs.unshift(`[${ts}] ${message}`);
+  state.logs = state.logs.slice(0, 120);
+  els.log.innerHTML = state.logs.map(entry => `<div>${escapeHtml(entry)}</div>`).join('');
 }
 
-// Authentication helpers
-function getAuthPassword() {
-  return localStorage.getItem('adminPassword');
+function escapeHtml(str) { return String(str).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+function toast(msg, light=false) {
+  const d = document.createElement('div');
+  d.className = 'toast' + (light ? ' light' : '');
+  d.textContent = msg;
+  document.body.appendChild(d);
+  setTimeout(() => { d.style.opacity = '0'; d.style.transition = 'opacity .2s'; setTimeout(()=>d.remove(), 250); }, 1800);
 }
 
-function getAuthHeaders() {
-  const password = getAuthPassword();
-  if (!password) return {};
-  return { 'Authorization': `Bearer ${password}` };
+function getAuthHeaders() { return state.password ? { 'Authorization': `Bearer ${state.password}` } : {}; }
+
+function handleAuthLoss(reason) {
+  state.password = '';
+  localStorage.removeItem('adminPassword');
+  setAuthVisual('bad', reason || '凭证无效，正在跳转登录页。');
+  toast('需要重新登录');
+  setTimeout(() => { window.location.href = '/login'; }, 400);
 }
 
-// Authenticated fetch wrapper
 async function authFetch(url, options = {}) {
-  const headers = { ...getAuthHeaders(), ...options.headers };
-  const response = await fetch(url, { ...options, headers });
-
-  if (response.status === 401) {
-    localStorage.removeItem('adminPassword');
-    window.location.href = '/login';
-    throw new Error('Unauthorized');
+  const headers = { ...getAuthHeaders(), ...(options.headers || {}) };
+  const resp = await fetch(url, { ...options, headers });
+  if (resp.status === 401) {
+    handleAuthLoss('后台返回 401，未自动跳转。');
+    throw new Error('未通过后台密码');
   }
-
-  return response;
+  return resp;
 }
 
-// Check authentication on page load - removed, combined with loadAccounts below
+function setBusy(btn, busy, text) {
+  if (!btn) return;
+  if (busy) { btn.dataset.prev = btn.textContent; btn.textContent = text || '进行中...'; btn.disabled = true; }
+  else { btn.textContent = btn.dataset.prev || btn.textContent; btn.disabled = false; }
+}
 
-// Virtual scroll state
-let accountsData = [];
-let virtualScroll = null;
+function maskSecret(val) {
+  if (!val) return '—';
+  const tail = String(val).slice(-4);
+  return `***${tail} (len ${String(val).length})`;
+}
 
-// Create account card element
-function createAccountCard(acc) {
-  const card = document.createElement('div');
-  card.className = 'card';
-  card.dataset.accountId = acc.id;
-
-  const header = document.createElement('div');
-  header.className = 'row';
-  const name = document.createElement('div');
-  name.innerHTML = '<strong>' + (acc.label || '(无标签)') + '</strong>';
-  const id = document.createElement('div');
-  id.className = 'chip mono';
-  id.textContent = acc.id;
-
-  const spacer = document.createElement('div');
-  spacer.className = 'right';
-
-  // Enabled toggle
-  const toggleWrap = document.createElement('div');
-  const toggleLabel = document.createElement('label');
-  toggleLabel.style.marginRight = '6px';
-  toggleLabel.className = 'muted';
-  toggleLabel.textContent = '启用';
-  const toggle = document.createElement('label');
-  toggle.className = 'switch';
-  const chk = document.createElement('input');
-  chk.type = 'checkbox';
-  chk.checked = !!acc.enabled;
-  chk.onchange = async () => {
-    try {
-      await updateAccount(acc.id, { enabled: chk.checked });
-    } catch(e) {
-      chk.checked = !chk.checked;
-    }
-  };
-  const slider = document.createElement('span');
-  slider.className = 'slider';
-  toggle.appendChild(chk); toggle.appendChild(slider);
-  toggleWrap.appendChild(toggleLabel); toggleWrap.appendChild(toggle);
-
-  const refreshBtn = document.createElement('button');
-  refreshBtn.className = 'btn-warn';
-  refreshBtn.textContent = '刷新Token';
-  refreshBtn.onclick = () => refreshAccount(acc.id);
-
-  const delBtn = document.createElement('button');
-  delBtn.className = 'btn-danger';
-  delBtn.textContent = '删除';
-  delBtn.onclick = () => deleteAccount(acc.id);
-
-  header.appendChild(name);
-  header.appendChild(id);
-  header.appendChild(spacer);
-  header.appendChild(toggleWrap);
-  header.appendChild(refreshBtn);
-  header.appendChild(delBtn);
-  card.appendChild(header);
-
-  const meta = document.createElement('div');
-  meta.className = 'kvs mono';
-  function row(k, v) {
-    const kEl = document.createElement('div'); kEl.className = 'muted'; kEl.textContent = k;
-    const vEl = document.createElement('div'); vEl.textContent = v ?? '';
-    meta.appendChild(kEl); meta.appendChild(vEl);
+async function loadAccounts() {
+  if (!state.password) { setAuthVisual('bad', '未验证，先去登录页。'); return; }
+  els.accountList.innerHTML = '<div class="small">加载中...</div>';
+  try {
+    const r = await authFetch(api('/v2/accounts'));
+    if (!r.ok) throw new Error(await r.text());
+    const data = await r.json();
+    state.accounts = Array.isArray(data) ? data : [];
+    renderAccounts();
+    log(`已载入 ${state.accounts.length} 个账号`);
+  } catch (e) {
+    els.accountList.innerHTML = `<div class="small">加载失败：${escapeHtml(e.message)}</div>`;
+    log(`拉取账号失败: ${e.message}`);
   }
-  row('enabled', String(!!acc.enabled));
-  row('success_count', acc.success_count ?? 0);
-  row('error_count', acc.error_count ?? 0);
-  row('last_refresh_status', acc.last_refresh_status);
-  row('last_refresh_time', acc.last_refresh_time);
-  row('clientId', acc.clientId);
-  row('hasRefreshToken', acc.refreshToken ? 'yes' : 'no');
-  row('hasAccessToken', acc.accessToken ? 'yes' : 'no');
-  row('created_at', acc.created_at);
-  row('updated_at', acc.updated_at);
+}
+
+function renderAccounts() {
+  const root = els.accountList;
+  root.innerHTML = '';
+  if (!state.accounts.length) { root.innerHTML = '<div class="small">暂无账号</div>'; return; }
+  state.accounts.forEach(acc => root.appendChild(buildAccountCard(acc)));
+}
+
+function formatMultiline(val) {
+  if (val === null || val === undefined || val === '') return '—';
+  if (typeof val === 'object') return JSON.stringify(val, null, 2);
+  return String(val);
+}
+
+function buildAccountCard(acc) {
+  const card = document.createElement('article'); card.className = 'card';
+  const head = document.createElement('div'); head.className = 'card-head';
+  const title = document.createElement('div'); title.style.fontWeight = '700'; title.textContent = acc.label || '未命名';
+  const badge = document.createElement('div'); badge.className = 'badge mono'; badge.textContent = acc.id;
+  const enabled = document.createElement('div'); enabled.className = 'pill ' + (acc.enabled ? 'ok' : 'bad'); enabled.textContent = acc.enabled ? 'Enabled' : 'Disabled';
+  const toggle = document.createElement('button'); toggle.className = 'ghost btn'; toggle.textContent = acc.enabled ? '禁用' : '启用';
+  toggle.onclick = () => updateAccount(acc.id, { enabled: !acc.enabled }, toggle, acc.enabled ? '禁用中...' : '启用中...');
+  const refresh = document.createElement('button'); refresh.className = 'ghost btn'; refresh.textContent = '刷新 Token'; refresh.onclick = () => refreshAccount(acc.id, refresh);
+  const collapseBtn = document.createElement('button'); collapseBtn.className = 'ghost btn collapse-toggle'; collapseBtn.textContent = '展开详情';
+  head.append(title, badge, enabled, refresh, toggle, collapseBtn); card.appendChild(head);
+
+  const detail = document.createElement('div'); detail.className = 'vstack hidden';
+
+  const meta = document.createElement('div'); meta.className = 'meta-grid';
+  const rows = [
+    ['clientId', acc.clientId],
+    ['clientSecret', maskSecret(acc.clientSecret)],
+    ['refreshToken', acc.refreshToken ? '[已填]' : '—'],
+    ['accessToken', acc.accessToken ? '[已填]' : '—'],
+    ['success', acc.success_count ?? 0],
+    ['error', acc.error_count ?? 0],
+    ['last_refresh', acc.last_refresh_time || 'never'],
+    ['last_status', acc.last_refresh_status || '—'],
+    ['created_at', acc.created_at],
+    ['updated_at', acc.updated_at],
+  ];
+  rows.forEach(([k,v]) => {
+    const kEl = document.createElement('div'); kEl.className = 'key'; kEl.textContent = k;
+    const vEl = document.createElement('div'); vEl.className = 'value'; vEl.textContent = formatMultiline(v);
+    meta.append(kEl, vEl);
+  });
+  detail.appendChild(meta);
+
   if (acc.other) {
-    row('other', JSON.stringify(acc.other));
+    const other = document.createElement('div'); other.className = 'code-block'; other.textContent = formatMultiline(acc.other); detail.appendChild(other);
   }
-  card.appendChild(meta);
 
-  // quick edit form
-  const editRow = document.createElement('div');
-  editRow.className = 'row';
-  editRow.style.marginTop = '8px';
-  const labelField = document.createElement('input');
-  labelField.placeholder = 'label';
-  labelField.value = acc.label || '';
-  const accessField = document.createElement('input');
-  accessField.placeholder = 'accessToken（可选）';
-  accessField.value = acc.accessToken || '';
-  const saveBtn = document.createElement('button');
-  saveBtn.className = 'btn-secondary';
-  saveBtn.textContent = '保存';
-  saveBtn.onclick = async () => {
-    await updateAccount(acc.id, { label: labelField.value, accessToken: accessField.value });
+  const editRow = document.createElement('div'); editRow.className = 'row';
+  const labelBox = document.createElement('div'); labelBox.className = 'field';
+  const labelLabel = document.createElement('label'); labelLabel.textContent = 'label';
+  const labelInput = document.createElement('input'); labelInput.value = acc.label || '';
+  labelBox.append(labelLabel, labelInput);
+  const accessBox = document.createElement('div'); accessBox.className = 'field';
+  const accessLabel = document.createElement('label'); accessLabel.textContent = 'accessToken (快速更新，可选)';
+  const accessInput = document.createElement('input'); accessInput.value = acc.accessToken || '';
+  accessBox.append(accessLabel, accessInput);
+  editRow.append(labelBox, accessBox); detail.appendChild(editRow);
+
+  const actions = document.createElement('div'); actions.className = 'actions';
+  const save = document.createElement('button'); save.className = 'ghost btn'; save.textContent = '保存';
+  save.onclick = () => updateAccount(acc.id, { label: labelInput.value, accessToken: accessInput.value }, save, '保存中...');
+  const del = document.createElement('button'); del.className = 'ghost btn'; del.textContent = '删除'; del.onclick = () => deleteAccount(acc.id, del);
+  actions.append(save, del); detail.appendChild(actions);
+
+  collapseBtn.onclick = () => {
+    const isHidden = detail.classList.contains('hidden');
+    detail.classList.toggle('hidden', !isHidden);
+    collapseBtn.textContent = isHidden ? '收起详情' : '展开详情';
   };
-  editRow.appendChild(labelField);
-  editRow.appendChild(accessField);
-  editRow.appendChild(saveBtn);
-  card.appendChild(editRow);
 
+  card.appendChild(detail);
   return card;
 }
 
-// Virtual scroll implementation with auto height adjustment
-class VirtualScroll {
-  constructor(container, items, itemHeight, bufferSize = 3) {
-    this.container = container;
-    this.items = items;
-    this.itemHeight = itemHeight;
-    this.bufferSize = bufferSize;
-    this.visibleStart = 0;
-    this.visibleEnd = 0;
-    this.renderedItems = new Map();
-    this.measuredHeights = new Map();
-    this.heightAdjusted = false;
-    
-    this.viewport = document.createElement('div');
-    this.viewport.className = 'list-viewport';
-    this.content = document.createElement('div');
-    this.content.className = 'list-content';
-    this.viewport.appendChild(this.content);
-    
-    this.container.innerHTML = '';
-    this.container.appendChild(this.viewport);
-    
-    this.container.addEventListener('scroll', () => this.onScroll());
-    this.render();
-    
-    // Auto-measure after first render
-    requestAnimationFrame(() => this.measureAndAdjust());
-  }
-  
-  onScroll() {
-    requestAnimationFrame(() => this.render());
-  }
-  
-  measureAndAdjust() {
-    let maxHeight = 0;
-    let needsAdjustment = false;
-    
-    // Measure all currently rendered items
-    for (const [idx, element] of this.renderedItems.entries()) {
-      const rect = element.getBoundingClientRect();
-      const actualHeight = rect.height + 12; // +12 for gap
-      this.measuredHeights.set(idx, actualHeight);
-      
-      if (actualHeight > maxHeight) {
-        maxHeight = actualHeight;
-      }
-      
-      // Check if actual height exceeds estimated height
-      if (actualHeight > this.itemHeight * 0.95) {
-        needsAdjustment = true;
-      }
-    }
-    
-    // Auto-adjust if needed
-    if (needsAdjustment && maxHeight > this.itemHeight) {
-      console.log(`[VirtualScroll] 检测到重影，调整高度: ${this.itemHeight}px -> ${Math.ceil(maxHeight)}px`);
-      this.itemHeight = Math.ceil(maxHeight);
-      this.heightAdjusted = true;
-      
-      // Re-render with new height
-      this.reposition();
-    }
-  }
-  
-  reposition() {
-    // Reposition all rendered items with new height
-    for (const [idx, element] of this.renderedItems.entries()) {
-      element.style.top = (idx * this.itemHeight) + 'px';
-    }
-    
-    // Update viewport height
-    this.viewport.style.height = (this.items.length * this.itemHeight) + 'px';
-  }
-  
-  render() {
-    const scrollTop = this.container.scrollTop;
-    const containerHeight = this.container.clientHeight;
-    
-    const start = Math.floor(scrollTop / this.itemHeight);
-    const end = Math.ceil((scrollTop + containerHeight) / this.itemHeight);
-    
-    const bufferedStart = Math.max(0, start - this.bufferSize);
-    const bufferedEnd = Math.min(this.items.length, end + this.bufferSize);
-    
-    if (bufferedStart === this.visibleStart && bufferedEnd === this.visibleEnd) {
-      return;
-    }
-    
-    this.visibleStart = bufferedStart;
-    this.visibleEnd = bufferedEnd;
-    
-    // Set viewport height
-    this.viewport.style.height = (this.items.length * this.itemHeight) + 'px';
-    
-    // Remove items outside visible range
-    for (const [idx, element] of this.renderedItems.entries()) {
-      if (idx < bufferedStart || idx >= bufferedEnd) {
-        element.remove();
-        this.renderedItems.delete(idx);
-      }
-    }
-    
-    // Add items in visible range
-    const fragment = document.createDocumentFragment();
-    let newItemsAdded = false;
-    
-    for (let i = bufferedStart; i < bufferedEnd; i++) {
-      if (!this.renderedItems.has(i)) {
-        const item = createAccountCard(this.items[i]);
-        item.style.position = 'absolute';
-        item.style.top = (i * this.itemHeight) + 'px';
-        item.style.left = '0';
-        item.style.right = '0';
-        this.renderedItems.set(i, item);
-        fragment.appendChild(item);
-        newItemsAdded = true;
-      }
-    }
-    
-    if (fragment.childNodes.length > 0) {
-      this.content.appendChild(fragment);
-      
-      // Measure new items after they're added to DOM
-      if (newItemsAdded && !this.heightAdjusted) {
-        requestAnimationFrame(() => this.measureAndAdjust());
-      }
-    }
-  }
-  
-  update(items) {
-    this.items = items;
-    this.renderedItems.clear();
-    this.measuredHeights.clear();
-    this.heightAdjusted = false;
-    this.content.innerHTML = '';
-    this.visibleStart = -1; // Force re-render
-    this.visibleEnd = -1;
-    requestAnimationFrame(() => {
-      this.render();
-      this.measureAndAdjust();
-    });
-  }
-  
-  destroy() {
-    this.container.removeEventListener('scroll', this.onScroll);
-    this.renderedItems.clear();
-    this.measuredHeights.clear();
-  }
+async function updateAccount(id, patch, btn, busyText) {
+  if (!state.password) return handleAuthLoss('请先登录页验证密码');
+  setBusy(btn, true, busyText || '更新中...');
+  try {
+    const r = await authFetch(api('/v2/accounts/' + encodeURIComponent(id)), { method:'PATCH', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(patch) });
+    if (!r.ok) throw new Error(await r.text());
+    toast('已更新账号'); await loadAccounts();
+  } catch (e) { toast('更新失败: ' + e.message, true); log('更新账号失败: ' + e.message); }
+  finally { setBusy(btn, false); }
 }
 
-function renderAccounts(list){
-  accountsData = list;
-  const root = document.getElementById('accounts');
-  
-  if (!Array.isArray(list) || list.length === 0) {
-    if (virtualScroll) {
-      virtualScroll.destroy();
-      virtualScroll = null;
-    }
-    root.innerHTML = '';
-    const empty = document.createElement('div');
-    empty.className = 'muted';
-    empty.textContent = '暂无账号';
-    root.appendChild(empty);
-    return;
-  }
-  
-  // Estimate item height (card height ~280px with gap)
-  const estimatedItemHeight = 292;
-  
-  if (virtualScroll) {
-    virtualScroll.update(list);
-  } else {
-    virtualScroll = new VirtualScroll(root, list, estimatedItemHeight);
-  }
+async function refreshAccount(id, btn) {
+  if (!state.password) return handleAuthLoss('请先登录页验证密码');
+  setBusy(btn, true, '刷新中...');
+  try {
+    const r = await authFetch(api('/v2/accounts/' + encodeURIComponent(id) + '/refresh'), { method:'POST' });
+    if (!r.ok) throw new Error(await r.text());
+    toast('已触发刷新'); await loadAccounts();
+  } catch (e) { toast('刷新失败: ' + e.message, true); }
+  finally { setBusy(btn, false); }
 }
 
-async function loadAccounts(){
-  try{
-    const r = await authFetch(api('/v2/accounts'));
-    const j = await r.json();
-    renderAccounts(j);
-  } catch(e){
-    alert('加载账户失败：' + e);
-  }
+async function deleteAccount(id, btn) {
+  if (!confirm('确认删除该账号？')) return;
+  setBusy(btn, true, '删除中...');
+  try {
+    const r = await authFetch(api('/v2/accounts/' + encodeURIComponent(id)), { method:'DELETE' });
+    if (!r.ok) throw new Error(await r.text());
+    toast('已删除'); await loadAccounts();
+  } catch (e) { toast('删除失败: ' + e.message, true); }
+  finally { setBusy(btn, false); }
 }
 
-async function createAccount(){
+async function createAccount() {
+  if (!state.password) return handleAuthLoss('请先登录页验证密码');
   const body = {
     label: document.getElementById('new_label').value.trim() || null,
     clientId: document.getElementById('new_clientId').value.trim(),
     clientSecret: document.getElementById('new_clientSecret').value.trim(),
     refreshToken: document.getElementById('new_refreshToken').value.trim() || null,
     accessToken: document.getElementById('new_accessToken').value.trim() || null,
-    enabled: document.getElementById('new_enabled').checked,
-    other: (()=>{
-      const t = document.getElementById('new_other').value.trim();
-      if (!t) return null;
-      try { return JSON.parse(t); } catch { alert('other 不是合法 JSON'); throw new Error('bad other'); }
-    })()
+    enabled: document.getElementById('new_enabled').value === 'true',
+    other: (()=>{ const t=document.getElementById('new_other').value.trim(); if(!t) return null; try { return JSON.parse(t); } catch { alert('other 不是合法 JSON'); throw new Error('bad other'); } })()
   };
-  try{
-    const r = await authFetch(api('/v2/accounts'), {
-      method:'POST',
-      headers:{ 'content-type':'application/json' },
-      body: JSON.stringify(body)
-    });
-    if (!r.ok) {
-      const t = await r.text();
-      throw new Error(t);
-    }
-    await loadAccounts();
-  } catch(e){
-    alert('创建失败：' + e);
-  }
+  setBusy(els.createBtn, true, '提交中...');
+  try {
+    const r = await authFetch(api('/v2/accounts'), { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(body) });
+    if (!r.ok) throw new Error(await r.text());
+    toast('创建成功'); log('创建账号成功'); await loadAccounts();
+  } catch (e) { toast('创建失败: ' + e.message, true); log('创建账号失败: ' + e.message); }
+  finally { setBusy(els.createBtn, false); }
 }
 
-async function deleteAccount(id){
-  if (!confirm('确认删除该账号？')) return;
-  try{
-    const r = await authFetch(api('/v2/accounts/' + encodeURIComponent(id)), { method:'DELETE' });
-    if (!r.ok) { throw new Error(await r.text()); }
-    await loadAccounts();
-  } catch(e){
-    alert('删除失败：' + e);
-  }
-}
+function api(path) { return ('/' + (path || '').replace(/^\/+/,'')).replace(/\/{2,}/g, '/'); }
 
-async function updateAccount(id, patch){
-  try{
-    const r = await authFetch(api('/v2/accounts/' + encodeURIComponent(id)), {
-      method:'PATCH',
-      headers:{ 'content-type':'application/json' },
-      body: JSON.stringify(patch)
-    });
-    if (!r.ok) { throw new Error(await r.text()); }
-    await loadAccounts();
-  } catch(e){
-    alert('更新失败：' + e);
-  }
-}
+function resetAuthSessionTimers() { if (state.authTicker) { clearInterval(state.authTicker); state.authTicker=null; } if (state.authWaitTicker) { clearInterval(state.authWaitTicker); state.authWaitTicker=null; } }
 
-async function refreshAccount(id){
-  try{
-    const r = await authFetch(api('/v2/accounts/' + encodeURIComponent(id) + '/refresh'), { method:'POST' });
-    if (!r.ok) { throw new Error(await r.text()); }
-    await loadAccounts();
-  } catch(e){
-    alert('刷新失败：' + e);
-  }
-}
-
- // URL Login (Device Authorization)
- let currentAuth = null;
- async function startAuth(){
-   const body = {
-     label: (document.getElementById('auth_label').value || '').trim() || null,
-     enabled: document.getElementById('auth_enabled').checked
-   };
-   try {
-     const r = await authFetch(api('/v2/auth/start'), {
-       method: 'POST',
-       headers: { 'content-type': 'application/json' },
-       body: JSON.stringify(body)
-     });
-     if (!r.ok) throw new Error(await r.text());
-     const j = await r.json();
-     currentAuth = j;
-     const info = [
-       '验证链接: ' + j.verificationUriComplete,
-       '用户代码: ' + (j.userCode || ''),
-       'authId: ' + j.authId,
-       'expiresIn: ' + j.expiresIn + 's',
-       'interval: ' + j.interval + 's'
-     ].join('\\n');
-     const el = document.getElementById('auth_info');
-     el.textContent = info + '\\n\\n请在新窗口中打开上述链接完成登录。';
-     try { window.open(j.verificationUriComplete, '_blank'); } catch {}
-   } catch(e){
-     document.getElementById('auth_info').textContent = '启动失败：' + e;
-   }
- }
-
- async function claimAuth(){
-   if (!currentAuth || !currentAuth.authId) {
-     document.getElementById('auth_info').textContent = '请先点击“开始登录”。';
-     return;
-   }
-   document.getElementById('auth_info').textContent += '\\n\\n正在等待授权并创建账号（最多5分钟）...';
-   try{
-     const r = await authFetch(api('/v2/auth/claim/' + encodeURIComponent(currentAuth.authId)), { method: 'POST' });
-     const text = await r.text();
-     let j;
-     try { j = JSON.parse(text); } catch { j = { raw: text }; }
-     document.getElementById('auth_info').textContent = '完成：\\n' + JSON.stringify(j, null, 2);
-     await loadAccounts();
-   } catch(e){
-     document.getElementById('auth_info').textContent += '\\n失败：' + e;
-   }
- }
-
-async function send() {
-  const model = document.getElementById('model').value.trim();
-  const stream = document.getElementById('stream').value === 'true';
-  const out = document.getElementById('out');
-  out.textContent = '';
-
-  let messages;
-  try { messages = JSON.parse(document.getElementById('messages').value); }
-  catch(e){ out.textContent = 'messages 不是合法 JSON'; return; }
-
-  const body = { model, messages, stream };
-  const headers = { 'content-type': 'application/json' };
-
-  if (!stream) {
-    const r = await authFetch(api('/v1/chat/completions'), {
-      method:'POST',
-      headers,
-      body: JSON.stringify(body)
-    });
-    const text = await r.text();
-    try { out.textContent = JSON.stringify(JSON.parse(text), null, 2); }
-    catch { out.textContent = text; }
+function updateAuthInfo(text, cls, timerText, stateText) {
+  els.authInfo.textContent = text;
+  els.authState.classList.remove('ok','bad');
+  if (cls) els.authState.classList.add(cls);
+  if (stateText) {
+    els.authState.textContent = stateText;
   } else {
-    const r = await authFetch(api('/v1/chat/completions'), {
-      method:'POST',
-      headers,
-      body: JSON.stringify(body)
-    });
-    const reader = r.body.getReader();
-    const decoder = new TextDecoder();
-    while (true) {
-      const {value, done} = await reader.read();
-      if (done) break;
-      out.textContent += decoder.decode(value, {stream:true});
+    els.authState.textContent = cls === 'ok' ? '进行中' : '未开始';
+  }
+  if (timerText) els.authTimer.textContent = timerText;
+}
+
+async function startDeviceAuth() {
+  if (!state.password) return handleAuthLoss('请先登录页验证密码');
+  resetAuthSessionTimers(); setBusy(els.startAuth, true, '启动中...'); updateAuthInfo('请求中...', 'bad', '准备获取链接', '启动中');
+  try {
+    const body = { label: (els.authLabel.value || '').trim() || null, enabled: els.authEnabled.value === 'true' };
+    const r = await authFetch(api('/v2/auth/start'), { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(body) });
+    if (!r.ok) throw new Error(await r.text());
+    const j = await r.json();
+    state.authSession = { ...j, startedAt: Date.now(), label: body.label, enabled: body.enabled };
+    updateAuthInfo(
+`验证链接: ${j.verificationUriComplete || ''}\n用户代码: ${j.userCode || ''}\nauthId: ${j.authId}\nexpiresIn: ${j.expiresIn}s\ninterval: ${j.interval}s`,
+      'ok', '已生成验证链接，手动打开完成登录。', '等待授权'
+    );
+    log('已生成设备授权链接');
+    const maxMs = (j.maxTimeout ? Number(j.maxTimeout) * 1000 : 300000);
+    const deadline = Date.now() + Math.min(maxMs, (j.expiresIn || 600) * 1000);
+    state.authTicker = setInterval(() => {
+      const left = Math.max(0, deadline - Date.now());
+      els.authTimer.textContent = `剩余 ${(left/1000).toFixed(0)} 秒可完成验证`;
+      if (left <= 0) resetAuthSessionTimers();
+    }, 1000);
+    // 自动进入等待领取 token，无需手动点击
+    claimDeviceAuth(true);
+  } catch (e) {
+    updateAuthInfo('启动失败：' + e.message, 'bad', '重试即可', '失败'); toast('启动登录失败: ' + e.message, true);
+  } finally { setBusy(els.startAuth, false); }
+}
+
+async function claimDeviceAuth(auto=false) {
+  if (!state.authSession || !state.authSession.authId) { updateAuthInfo('请先点击“开始登录”获取 authId', 'bad', '无有效会话'); return; }
+  resetAuthSessionTimers(); const start = Date.now();
+  state.authWaitTicker = setInterval(() => { const elapsed=((Date.now()-start)/1000).toFixed(0); els.authTimer.textContent = `等待授权中 · 已用 ${elapsed}s`; }, 1000);
+  try {
+    const r = await authFetch(api('/v2/auth/claim/' + encodeURIComponent(state.authSession.authId)), { method:'POST' });
+    const text = await r.text(); let j; try { j = JSON.parse(text); } catch { j = { raw: text }; }
+    if (!r.ok) throw new Error(j.detail || text);
+    updateAuthInfo('完成：\n' + JSON.stringify(j, null, 2), 'ok', 'token 已获取，列表会自动刷新', '已完成');
+    log('设备授权完成'); await loadAccounts();
+  } catch (e) { updateAuthInfo('失败：' + e.message, 'bad', '请重新开始', '失败'); toast('领取失败: ' + e.message, true); }
+  finally { resetAuthSessionTimers(); if (!auto) { /* no button to reset */ } }
+}
+
+async function sendChat() {
+  if (!state.password) return handleAuthLoss('请先登录页验证密码');
+  els.out.textContent = ''; let messages;
+  try { messages = JSON.parse(els.messages.value); } catch (e) { els.out.textContent = 'messages 不是合法 JSON'; return; }
+  const body = { model: els.model.value.trim(), messages, stream: els.stream.value === 'true' };
+  const headers = { 'Content-Type': 'application/json' }; setBusy(els.sendBtn, true, '发送中...');
+  try {
+    if (!body.stream) {
+      const r = await authFetch(api('/v1/chat/completions'), { method:'POST', headers, body: JSON.stringify(body) }); const text = await r.text();
+      try { els.out.textContent = JSON.stringify(JSON.parse(text), null, 2); } catch { els.out.textContent = text; }
+    } else {
+      const r = await authFetch(api('/v1/chat/completions'), { method:'POST', headers, body: JSON.stringify(body) });
+      const reader = r.body.getReader(); const decoder = new TextDecoder();
+      while (true) { const {value, done} = await reader.read(); if (done) break; els.out.textContent += decoder.decode(value, {stream:true}); }
     }
+  } catch (e) { els.out.textContent = '请求失败：' + e.message; }
+  finally { setBusy(els.sendBtn, false); }
+}
+
+function switchTab(name) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.id === 'tab-' + name));
+}
+
+function bootstrap() {
+  document.querySelectorAll('.tab-btn').forEach(btn => btn.addEventListener('click', () => switchTab(btn.dataset.tab)));
+  els.reloadAccounts.addEventListener('click', loadAccounts);
+  els.createBtn.addEventListener('click', createAccount);
+  els.startAuth.addEventListener('click', startDeviceAuth);
+  els.sendBtn.addEventListener('click', sendChat);
+  els.clearAuth.addEventListener('click', () => { handleAuthLoss('手动清除凭证'); });
+
+  if (state.password) {
+    setAuthVisual('ok', '已从本地读取密码，可直接操作。'); loadAccounts();
+  } else {
+    setAuthVisual('bad', '未验证，自动跳转登录页。');
+    window.location.href = '/login';
   }
 }
 
-window.addEventListener('DOMContentLoaded', () => {
-  // Check authentication first
-  const password = getAuthPassword();
-  if (!password) {
-    window.location.href = '/login';
-    return;
-  }
-  // Only load accounts if authenticated
-  loadAccounts();
-});
+document.addEventListener('DOMContentLoaded', bootstrap);
 </script>
 </body>
 </html>

@@ -352,20 +352,52 @@ async def close_db() -> None:
 
 
 # Helper functions for common operations
+_KEY_CANON = {
+    # normalize different database identifier casings to the camelCase used by the app
+    "clientid": "clientId",
+    "client_id": "clientId",
+    "clientsecret": "clientSecret",
+    "client_secret": "clientSecret",
+    "refreshtoken": "refreshToken",
+    "refresh_token": "refreshToken",
+    "accesstoken": "accessToken",
+    "access_token": "accessToken",
+    "last_refresh_time": "last_refresh_time",
+    "last_refresh_status": "last_refresh_status",
+    "created_at": "created_at",
+    "updated_at": "updated_at",
+    "success_count": "success_count",
+    "error_count": "error_count",
+    "label": "label",
+    "id": "id",
+    "other": "other",
+    "enabled": "enabled",
+}
+
+
+def _canonical_key(name: str) -> str:
+    """Return a stable key name regardless of backend lowercasing (e.g., PostgreSQL)."""
+    lower = name.lower()
+    return _KEY_CANON.get(lower, name)
+
+
 def row_to_dict(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Convert a database row to dict with JSON parsing for 'other' field."""
     if row is None:
         return None
-    d = dict(row)
-    if d.get("other"):
+
+    normalized = {_canonical_key(k): v for k, v in dict(row).items()}
+
+    if normalized.get("other"):
         try:
-            d["other"] = json.loads(d["other"])
+            normalized["other"] = json.loads(normalized["other"])
         except Exception:
             pass
-    # normalize enabled to bool
-    if "enabled" in d and d["enabled"] is not None:
+
+    if "enabled" in normalized and normalized["enabled"] is not None:
         try:
-            d["enabled"] = bool(int(d["enabled"]))
+            normalized["enabled"] = bool(int(normalized["enabled"]))
         except Exception:
-            d["enabled"] = bool(d["enabled"])
-    return d
+            normalized["enabled"] = bool(normalized["enabled"])
+
+    return normalized

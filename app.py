@@ -139,6 +139,15 @@ def _get_proxies() -> Optional[Dict[str, str]]:
         return {"http": proxy, "https": proxy}
     return None
 
+# HTTP client tunables (env-overridable)
+HTTP_CONNECT_TIMEOUT: float = float(os.getenv("HTTP_CONNECT_TIMEOUT", "1.0"))
+HTTP_READ_TIMEOUT: float = float(os.getenv("HTTP_READ_TIMEOUT", "300.0"))
+HTTP_WRITE_TIMEOUT: float = float(os.getenv("HTTP_WRITE_TIMEOUT", "1.0"))
+HTTP_POOL_TIMEOUT: float = float(os.getenv("HTTP_POOL_TIMEOUT", "1.0"))
+HTTP_MAX_CONNECTIONS: int = int(os.getenv("HTTP_MAX_CONNECTIONS", "60"))
+HTTP_MAX_KEEPALIVE: int = int(os.getenv("HTTP_MAX_KEEPALIVE", "60"))
+HTTP_KEEPALIVE_EXPIRY: float = float(os.getenv("HTTP_KEEPALIVE_EXPIRY", "30.0"))
+
 async def _init_global_client():
     global GLOBAL_CLIENT
     proxies = _get_proxies()
@@ -155,16 +164,16 @@ async def _init_global_client():
     # max_keepalive_connections: 保持活跃的连接数
     # keepalive_expiry: 连接保持时间
     limits = httpx.Limits(
-        max_keepalive_connections=60,
-        max_connections=60,  # 提高到500以支持更高并发
-        keepalive_expiry=30.0  # 30秒后释放空闲连接
+        max_keepalive_connections=max(1, HTTP_MAX_KEEPALIVE),
+        max_connections=max(1, HTTP_MAX_CONNECTIONS),
+        keepalive_expiry=max(0.1, HTTP_KEEPALIVE_EXPIRY)
     )
     # 为流式响应设置更长的超时
     timeout = httpx.Timeout(
-        connect=1.0,  # 连接超时
-        read=300.0,    # 读取超时(流式响应需要更长时间)
-        write=1.0,    # 写入超时
-        pool=1.0      # 从连接池获取连接的超时时间(关键!)
+        connect=max(0.01, HTTP_CONNECT_TIMEOUT),  # 连接超时
+        read=max(0.01, HTTP_READ_TIMEOUT),        # 读取超时(流式响应需要更长时间)
+        write=max(0.01, HTTP_WRITE_TIMEOUT),      # 写入超时
+        pool=max(0.01, HTTP_POOL_TIMEOUT)         # 从连接池获取连接的超时时间
     )
     GLOBAL_CLIENT = httpx.AsyncClient(mounts=mounts, timeout=timeout, limits=limits)
 
@@ -257,6 +266,9 @@ def _parse_allowed_keys_env() -> List[str]:
 ALLOWED_API_KEYS: List[str] = _parse_allowed_keys_env()
 MAX_ERROR_COUNT: int = int(os.getenv("MAX_ERROR_COUNT", "100"))
 TOKEN_COUNT_MULTIPLIER: float = float(os.getenv("TOKEN_COUNT_MULTIPLIER", "1.0"))
+
+# Device authorization timeout (seconds, configurable via env)
+DEVICE_AUTH_TIMEOUT_SEC: int = max(1, int(os.getenv("DEVICE_AUTH_TIMEOUT_SEC", "300")))
 
 # Lazy Account Pool settings
 LAZY_ACCOUNT_POOL_ENABLED: bool = os.getenv("LAZY_ACCOUNT_POOL_ENABLED", "false").lower() in ("true", "1", "yes")
@@ -1066,6 +1078,7 @@ if CONSOLE_ENABLED:
             "userCode": sess["userCode"],
             "expiresIn": sess["expiresIn"],
             "interval": sess["interval"],
+            "maxTimeout": DEVICE_AUTH_TIMEOUT_SEC,
         }
 
     @app.get("/v2/auth/status/{auth_id}")
@@ -1074,7 +1087,7 @@ if CONSOLE_ENABLED:
         if not sess:
             raise HTTPException(status_code=404, detail="Auth session not found")
         now_ts = int(time.time())
-        deadline = sess["startTime"] + min(int(sess.get("expiresIn", 600)), 300)
+        deadline = sess["startTime"] + min(int(sess.get("expiresIn", 600)), DEVICE_AUTH_TIMEOUT_SEC)
         remaining = max(0, deadline - now_ts)
         return {
             "status": sess.get("status"),
@@ -1099,13 +1112,15 @@ if CONSOLE_ENABLED:
                 "error": sess.get("error"),
             }
         try:
+            sess["status"] = "claiming"
+            sess["error"] = None
             toks = await poll_token_device_code(
                 sess["clientId"],
                 sess["clientSecret"],
                 sess["deviceCode"],
                 sess["interval"],
                 sess["expiresIn"],
-                max_timeout_sec=300,  # 5 minutes
+                max_timeout_sec=DEVICE_AUTH_TIMEOUT_SEC,
             )
             access_token = toks.get("accessToken")
             refresh_token = toks.get("refreshToken")
@@ -1128,6 +1143,7 @@ if CONSOLE_ENABLED:
             }
         except TimeoutError:
             sess["status"] = "timeout"
+            sess["error"] = "Authorization timeout"
             raise HTTPException(status_code=408, detail="Authorization timeout (5 minutes)")
         except httpx.HTTPError as e:
             sess["status"] = "error"

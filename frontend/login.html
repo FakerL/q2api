@@ -1,203 +1,130 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Login - Q2API</title>
-    <style>
-        :root {
-            --bg:#0a0e1a;
-            --panel:#0f1420;
-            --muted:#8b95a8;
-            --text:#e8f0ff;
-            --accent:#4f8fff;
-            --danger:#ff4757;
-            --border:#1a2332;
-            --glow:rgba(79,143,255,.15);
-        }
-        * { box-sizing:border-box; }
-        html, body { height:100%; margin:0; }
-        body {
-            background:radial-gradient(ellipse at top, #0f1624 0%, #0a0e1a 100%);
-            color:var(--text);
-            font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,PingFang SC,Hiragino Sans GB,Microsoft YaHei,Noto Sans,Arial,sans-serif;
-            line-height:1.6;
-            display:flex;
-            align-items:center;
-            justify-content:center;
-            min-height:100vh;
-            padding:20px;
-        }
-        .container {
-            width:100%;
-            max-width:420px;
-        }
-        .header {
-            text-align:center;
-            margin-bottom:32px;
-        }
-        h1 {
-            font-size:32px;
-            font-weight:700;
-            margin:0 0 8px;
-            background:linear-gradient(135deg,#4f8fff,#7b9fff);
-            -webkit-background-clip:text;
-            -webkit-text-fill-color:transparent;
-            background-clip:text;
-        }
-        .subtitle {
-            color:var(--muted);
-            font-size:14px;
-        }
-        .panel {
-            background:linear-gradient(145deg,rgba(15,20,32,.8),rgba(10,14,26,.9));
-            border:1px solid var(--border);
-            border-radius:16px;
-            padding:32px;
-            box-shadow:0 20px 60px rgba(0,0,0,.4),0 0 0 1px rgba(79,143,255,.08),inset 0 1px 0 rgba(255,255,255,.03);
-            backdrop-filter:blur(12px);
-        }
-        .field {
-            margin-bottom:24px;
-        }
-        label {
-            display:block;
-            color:var(--muted);
-            font-size:13px;
-            font-weight:500;
-            margin-bottom:8px;
-        }
-        input {
-            width:100%;
-            background:rgba(12,16,28,.6);
-            color:var(--text);
-            border:1px solid var(--border);
-            border-radius:12px;
-            padding:12px 14px;
-            outline:none;
-            transition:all .2s;
-            font-size:14px;
-            box-shadow:inset 0 1px 2px rgba(0,0,0,.2);
-        }
-        input:focus {
-            border-color:var(--accent);
-            box-shadow:0 0 0 3px var(--glow),inset 0 1px 2px rgba(0,0,0,.2);
-            background:rgba(12,16,28,.8);
-        }
-        button {
-            width:100%;
-            background:linear-gradient(135deg,#2563eb,#1e40af);
-            color:#fff;
-            border:none;
-            border-radius:12px;
-            padding:12px 20px;
-            font-weight:600;
-            font-size:14px;
-            cursor:pointer;
-            transition:all .2s;
-            box-shadow:0 4px 16px rgba(37,99,235,.3),inset 0 1px 0 rgba(255,255,255,.1);
-            position:relative;
-            overflow:hidden;
-        }
-        button:before {
-            content:'';
-            position:absolute;
-            top:0;left:0;right:0;bottom:0;
-            background:linear-gradient(135deg,rgba(255,255,255,.1),transparent);
-            opacity:0;
-            transition:opacity .2s;
-        }
-        button:hover {
-            transform:translateY(-1px);
-            box-shadow:0 6px 20px rgba(37,99,235,.4),inset 0 1px 0 rgba(255,255,255,.15);
-        }
-        button:hover:before { opacity:1; }
-        button:active { transform:translateY(0); }
-        button:disabled {
-            opacity:.5;
-            cursor:not-allowed;
-            transform:none;
-        }
-        @keyframes slide-up {
-            from { transform:translateY(100%); opacity:0; }
-            to { transform:translateY(0); opacity:1; }
-        }
-        .toast {
-            position:fixed;
-            bottom:20px;
-            right:20px;
-            padding:12px 20px;
-            border-radius:12px;
-            color:#fff;
-            font-size:14px;
-            font-weight:500;
-            box-shadow:0 8px 24px rgba(0,0,0,.4);
-            animation:slide-up .3s ease-out;
-            z-index:1000;
-        }
-        .toast.error {
-            background:linear-gradient(135deg,#dc2626,#991b1b);
-        }
-        .toast.success {
-            background:linear-gradient(135deg,#16a34a,#15803d);
-        }
-    </style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Q2API 登录</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&display=swap');
+    :root {
+      --bg:#f6f6f6;
+      --ink:#0f0f0f;
+      --muted:#555;
+      --line:#dedede;
+      --panel:#fff;
+      --shadow:0 16px 40px rgba(0,0,0,0.08);
+      --sans:'Space Grotesk','Inter','Noto Sans SC',system-ui,sans-serif;
+    }
+    * { box-sizing:border-box; }
+    body {
+      margin:0;
+      min-height:100vh;
+      background:var(--bg);
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      padding:20px;
+      font-family:var(--sans);
+      color:var(--ink);
+    }
+    .wrap { width:100%; max-width:420px; }
+    .panel {
+      background:var(--panel);
+      border:1px solid var(--line);
+      padding:24px;
+      box-shadow:var(--shadow);
+      display:flex;
+      flex-direction:column;
+      gap:16px;
+    }
+    h1 { margin:0; font-size:26px; letter-spacing:-0.02em; }
+    p { margin:4px 0 0; color:var(--muted); }
+    label { font-size:12px; letter-spacing:0.08em; text-transform:uppercase; color:var(--muted); }
+    input {
+      width:100%;
+      padding:12px;
+      border:1px solid var(--line);
+      border-radius:2px;
+      background:#fff;
+      font-size:14px;
+      font-family:var(--sans);
+      transition:border 0.15s ease, box-shadow 0.15s ease;
+    }
+    input:focus { outline:none; border-color:#111; box-shadow:0 0 0 2px #e5e5e5; }
+    button {
+      width:100%;
+      padding:12px;
+      border:1px solid #111;
+      background:#111;
+      color:#fff;
+      font-weight:600;
+      cursor:pointer;
+      border-radius:2px;
+      transition:transform 0.1s ease, box-shadow 0.15s ease;
+    }
+    button:hover { transform:translateY(-1px); box-shadow:0 10px 24px rgba(0,0,0,0.2); }
+    button:disabled { opacity:0.5; cursor:not-allowed; transform:none; box-shadow:none; }
+    .status { font-size:13px; color:var(--muted); min-height:18px; }
+    .status.ok { color:var(--ink); }
+    .status.err { color:#2e2e2e; }
+  </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>Q2API</h1>
-            <p class="subtitle">Admin Console</p>
-        </div>
-        <div class="panel">
-            <form id="loginForm">
-                <div class="field">
-                    <label for="password">Password</label>
-                    <input type="password" id="password" name="password" required placeholder="Enter password" autofocus>
-                </div>
-                <button type="submit" id="loginButton">Login</button>
-            </form>
-        </div>
+  <div class="wrap">
+    <div class="panel">
+      <div>
+        <h1>登录控制台</h1>
+      </div>
+      <form id="loginForm">
+        <label for="password">Admin Password</label>
+        <input type="password" id="password" name="password" required autocomplete="current-password" />
+        <div class="status" id="status">输入密码后点击登录。</div>
+        <button type="submit" id="loginButton">登录</button>
+      </form>
     </div>
+  </div>
 
-    <script>
-        const form=document.getElementById('loginForm'),btn=document.getElementById('loginButton');
-        form.addEventListener('submit',async(e)=>{
-            e.preventDefault();
-            btn.disabled=true;
-            btn.textContent='Logging in...';
-            try{
-                const fd=new FormData(form),r=await fetch('/api/login',{
-                    method:'POST',
-                    headers:{'Content-Type':'application/json'},
-                    body:JSON.stringify({password:fd.get('password')})
-                });
-                const d=await r.json();
-                if(d.success){
-                    localStorage.setItem('adminPassword',fd.get('password'));
-                    location.href='/';
-                }else{
-                    showToast(d.message||'Login failed','error');
-                }
-            }catch(e){
-                showToast('Network error, please try again','error');
-            }finally{
-                btn.disabled=false;
-                btn.textContent='Login';
-            }
+  <script>
+    const form = document.getElementById('loginForm');
+    const btn = document.getElementById('loginButton');
+    const status = document.getElementById('status');
+    const pwdInput = document.getElementById('password');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const pwd = (pwdInput.value || '').trim();
+      if (!pwd) {
+        status.textContent = '请输入密码';
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = '验证中...';
+      status.textContent = '正在验证...';
+      status.className = 'status';
+      try {
+        const r = await fetch('/api/login', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ password: pwd })
         });
-
-        function showToast(m,t='error'){
-            const d=document.createElement('div');
-            d.className='toast '+t;
-            d.textContent=m;
-            document.body.appendChild(d);
-            setTimeout(()=>{
-                d.style.opacity='0';
-                d.style.transition='opacity .3s';
-                setTimeout(()=>d.parentNode&&document.body.removeChild(d),300)
-            },2000);
+        const data = await r.json();
+        if (data.success) {
+          localStorage.setItem('adminPassword', pwd);
+          status.textContent = '验证成功，正在跳转...';
+          status.classList.add('ok');
+          location.href = '/';
+        } else {
+          status.textContent = data.message || '密码不正确';
+          status.classList.add('err');
         }
-    </script>
+      } catch (err) {
+        status.textContent = '请求失败，请稍后再试';
+        status.classList.add('err');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '登录';
+      }
+    });
+  </script>
 </body>
 </html>
