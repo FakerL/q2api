@@ -38,8 +38,8 @@ def _oidc_headers() -> Dict[str, str]:
     """构造OIDC请求所需的HTTP头。"""
     return {
         "content-type": "application/json",
-        "user-agent": "aws-sdk-rust/1.3.9 os/windows lang/rust/1.87.0",
-        "x-amz-user-agent": "aws-sdk-rust/1.3.9 ua/2.1 api/ssooidc/1.88.0 os/windows lang/rust/1.87.0 m/E app/AmazonQ-For-CLI",
+        "user-agent": "aws-sdk-rust/1.3.9 os/macos lang/rust/1.87.0 exec-env/CLI md/appVersion-1.19.7",
+        "x-amz-user-agent": "aws-sdk-rust/1.3.9 ua/2.1 api/ssooidc/1.88.0 os/macos lang/rust/1.87.0 exec-env/CLI m/E md/appVersion-1.19.7 app/AmazonQ-For-CLI",
         "amz-sdk-request": "attempt=1; max=3",
         "amz-sdk-invocation-id": str(uuid.uuid4()),
     }

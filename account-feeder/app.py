@@ -32,8 +32,8 @@ DEVICE_AUTH_URL = f"{OIDC_BASE}/device_authorization"
 TOKEN_URL = f"{OIDC_BASE}/token"
 START_URL = "https://view.awsapps.com/start"
 
-USER_AGENT = "aws-sdk-rust/1.3.9 os/windows lang/rust/1.87.0"
-X_AMZ_USER_AGENT = "aws-sdk-rust/1.3.9 ua/2.1 api/ssooidc/1.88.0 os/windows lang/rust/1.87.0 m/E app/AmazonQ-For-CLI"
+USER_AGENT = "aws-sdk-rust/1.3.9 os/macos lang/rust/1.87.0 exec-env/CLI md/appVersion-1.19.7"
+X_AMZ_USER_AGENT = "aws-sdk-rust/1.3.9 ua/2.1 api/ssooidc/1.88.0 os/macos lang/rust/1.87.0 exec-env/CLI m/E md/appVersion-1.19.7 app/AmazonQ-For-CLI"
 AMZ_SDK_REQUEST = "attempt=1; max=3"
 
 # 内存存储授权会话
