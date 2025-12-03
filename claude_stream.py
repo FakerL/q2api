@@ -110,10 +110,10 @@ class ClaudeStreamHandler:
 
                 while pos < len(self.think_buffer):
                     if not self.in_think_block:
-                        # Look for <think> tag
-                        think_start = self.think_buffer.find("<think>", pos)
+                        # Look for <thinking> tag
+                        think_start = self.think_buffer.find("<thinking>", pos)
                         if think_start != -1:
-                            # Send text before <think>
+                            # Send text before <thinking>
                             before_text = self.think_buffer[pos:think_start]
                             if before_text:
                                 if not self.content_block_start_sent:
@@ -136,9 +136,9 @@ class ClaudeStreamHandler:
                             self.content_block_started = True
                             self.content_block_stop_sent = False
                             self.in_think_block = True
-                            pos = think_start + 7  # Skip <think>
+                            pos = think_start + 7  # Skip <thinking>
                         else:
-                            # No <think> found, send remaining as text
+                            # No <thinking> found, send remaining as text
                             remaining = self.think_buffer[pos:]
                             if not self.content_block_start_sent:
                                 self.content_block_index += 1
@@ -150,8 +150,8 @@ class ClaudeStreamHandler:
                             self.think_buffer = ""
                             break
                     else:
-                        # Look for </think> tag
-                        think_end = self.think_buffer.find("</think>", pos)
+                        # Look for </thinking> tag
+                        think_end = self.think_buffer.find("</thinking>", pos)
                         if think_end != -1:
                             # Send thinking content
                             thinking_text = self.think_buffer[pos:think_end]
@@ -163,9 +163,9 @@ class ClaudeStreamHandler:
                             self.content_block_stop_sent = True
                             self.content_block_start_sent = False
                             self.in_think_block = False
-                            pos = think_end + 8  # Skip </think>
+                            pos = think_end + 8  # Skip </thinking>
                         else:
-                            # No </think> yet, send as thinking
+                            # No </thinking> yet, send as thinking
                             remaining = self.think_buffer[pos:]
                             yield build_content_block_delta(self.content_block_index, remaining)
                             self.think_buffer = ""
