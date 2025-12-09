@@ -32,11 +32,38 @@ def get_current_timestamp() -> str:
     return f"{weekday}, {iso_time}"
 
 def map_model_name(claude_model: str) -> str:
-    """Map Claude model name to Amazon Q model ID."""
+    """Map Claude model name to Amazon Q model ID.
+
+    Accepts both short names (e.g., claude-sonnet-4) and canonical names
+    (e.g., claude-sonnet-4-20250514).
+    """
+    DEFAULT_MODEL = "auto"
+
+    # Available models in the service
+    VALID_MODELS = {"auto", "claude-sonnet-4", "claude-sonnet-4.5", "claude-haiku-4.5", "claude-opus-4.5"}
+
+    # Mapping from canonical names to AWS model IDs
+    CANONICAL_TO_SHORT = {
+        # Anthropic canonical names
+        "claude-sonnet-4-20250514": "claude-sonnet-4",
+        "claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
+        "claude-haiku-4-5-20251001": "claude-haiku-4.5",
+        "claude-opus-4-5-20251101": "claude-opus-4.5",
+    }
+
     model_lower = claude_model.lower()
-    if model_lower.startswith("claude-sonnet-4.5") or model_lower.startswith("claude-sonnet-4-5"):
-        return "claude-sonnet-4.5"
-    return "claude-sonnet-4"
+
+    # Check if it's a valid short name
+    if model_lower in VALID_MODELS:
+        return model_lower
+
+    # Check if it's a canonical name
+    if model_lower in CANONICAL_TO_SHORT:
+        return CANONICAL_TO_SHORT[model_lower]
+
+    # Unknown model - log warning and return default
+    logger.warning(f"Unknown model '{claude_model}', falling back to default model '{DEFAULT_MODEL}'")
+    return DEFAULT_MODEL
 
 def extract_text_from_content(content: Union[str, List[Dict[str, Any]]]) -> str:
     """Extract text from Claude content."""
@@ -116,7 +143,7 @@ def merge_user_messages(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
     result = {
         "content": "\n\n".join(all_contents),
         "userInputMessageContext": base_context or {},
-        "origin": base_origin or "CLI",
+        "origin": base_origin or "KIRO_CLI",
         "modelId": base_model
     }
     
@@ -201,7 +228,7 @@ def process_history(messages: List[ClaudeMessage]) -> List[Dict[str, Any]]:
             u_msg = {
                 "content": text_content,
                 "userInputMessageContext": user_ctx,
-                "origin": "CLI"
+                "origin": "KIRO_CLI"
             }
             if images:
                 u_msg["images"] = images
@@ -381,12 +408,12 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
             
     # 5. Model
     model_id = map_model_name(req.model)
-    
+
     # 6. User Input Message
     user_input_msg = {
         "content": formatted_content,
         "userInputMessageContext": user_ctx,
-        "origin": "CLI",
+        "origin": "KIRO_CLI",
         "modelId": model_id
     }
     if images:

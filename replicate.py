@@ -266,7 +266,7 @@ async def send_chat_request(
         
         if resp.status_code >= 400:
             try:
-                await resp.read()
+                await resp.aread()
                 err = resp.text
             except Exception:
                 err = f"HTTP {resp.status_code}"

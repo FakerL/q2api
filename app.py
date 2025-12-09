@@ -117,6 +117,7 @@ try:
     _claude_types, _claude_converter, _claude_stream = _load_claude_modules()
     ClaudeRequest = _claude_types.ClaudeRequest
     convert_claude_to_amazonq_request = _claude_converter.convert_claude_to_amazonq_request
+    map_model_name = _claude_converter.map_model_name
     ClaudeStreamHandler = _claude_stream.ClaudeStreamHandler
 except Exception as e:
     print(f"Failed to load Claude modules: {e}")
@@ -126,6 +127,8 @@ except Exception as e:
         pass
     convert_claude_to_amazonq_request = None
     ClaudeStreamHandler = None
+    def map_model_name(model: str) -> str:
+        return model  # Fallback: return as-is
 
 # ------------------------------------------------------------------------------
 # Global HTTP Client
@@ -837,7 +840,8 @@ async def chat_completions(req: ChatCompletionRequest, account: Dict[str, Any] =
     - messages will be converted into "{role}:\n{content}" and injected into template
     - account is chosen randomly among enabled accounts (API key is for authorization only)
     """
-    model = req.model
+    # Map canonical model names (e.g., claude-haiku-4-5-20251001) to short names (e.g., claude-haiku-4.5)
+    model = map_model_name(req.model) if req.model else None
     do_stream = bool(req.stream)
 
     async def _send_upstream(stream: bool) -> Tuple[Optional[str], Optional[AsyncGenerator[str, None]], Any]:
