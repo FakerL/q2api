@@ -32,11 +32,37 @@ def get_current_timestamp() -> str:
     return f"{weekday}, {iso_time}"
 
 def map_model_name(claude_model: str) -> str:
-    """Map Claude model name to Amazon Q model ID."""
+    """Map Claude model name to Amazon Q model ID.
+
+    Accepts both short names (e.g., claude-sonnet-4) and canonical names
+    (e.g., claude-sonnet-4-20250514).
+    """
+    DEFAULT_MODEL = "auto"
+
+    # Available models in the service
+    VALID_MODELS = {"auto", "claude-sonnet-4", "claude-sonnet-4.5", "claude-haiku-4.5", "claude-opus-4.5"}
+
+    # Mapping from canonical names to short names
+    CANONICAL_TO_SHORT = {
+        "claude-sonnet-4-20250514": "claude-sonnet-4",
+        "claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
+        "claude-haiku-4-5-20251001": "claude-haiku-4.5",
+        "claude-opus-4-5-20251101": "claude-opus-4.5",
+    }
+
     model_lower = claude_model.lower()
-    if model_lower.startswith("claude-sonnet-4.5") or model_lower.startswith("claude-sonnet-4-5"):
-        return "claude-sonnet-4.5"
-    return "claude-sonnet-4"
+
+    # Check if it's a valid short name
+    if model_lower in VALID_MODELS:
+        return model_lower
+
+    # Check if it's a canonical name
+    if model_lower in CANONICAL_TO_SHORT:
+        return CANONICAL_TO_SHORT[model_lower]
+
+    # Unknown model - log warning and return default
+    logger.warning(f"Unknown model '{claude_model}', falling back to default model '{DEFAULT_MODEL}'")
+    return DEFAULT_MODEL
 
 def extract_text_from_content(content: Union[str, List[Dict[str, Any]]]) -> str:
     """Extract text from Claude content."""

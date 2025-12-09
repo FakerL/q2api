@@ -23,7 +23,7 @@
                                 "currentWorkingDirectory": "C:\\Users\\admin"
                             }
                         },
-                        "origin": "CLI"
+                        "origin": "KIRO_CLI"
                     }
                 }
             ],
@@ -37,7 +37,7 @@
                         },
                         "tools": []
                     },
-                    "origin": "CLI",
+                    "origin": "KIRO_CLI",
                     "modelId": "claude-sonnet-4"
                 }
             },
