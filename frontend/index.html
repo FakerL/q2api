@@ -36,6 +36,8 @@
     .tabs { display:flex; gap:10px; flex-wrap:wrap; }
     .tab-btn { border:1px solid var(--line); background:#fff; padding:10px 14px; cursor:pointer; font-weight:600; letter-spacing:0.01em; }
     .tab-btn.active { background:#111; color:#fff; border-color:#111; }
+    .filter-btn { border:1px solid var(--line); background:#fff; padding:6px 10px; cursor:pointer; font-weight:500; font-size:13px; }
+    .filter-btn.active { background:#111; color:#fff; border-color:#111; }
     .tab { display:none; background:var(--panel); border:1px solid var(--line); box-shadow:var(--shadow); padding:16px; }
     .tab.active { display:block; }
     .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
@@ -89,10 +91,20 @@
 
     <section class="tab active" id="tab-accounts">
       <div class="row" style="justify-content:space-between; align-items:flex-start; gap:8px;">
-        <div>
-          <h2>账号列表</h2>
+        <div class="row" style="gap:12px; align-items:center;">
+          <h2 style="margin:0;">账号列表</h2>
+          <div class="tabs" style="gap:4px;">
+            <button class="filter-btn active" data-filter="all">全部</button>
+            <button class="filter-btn" data-filter="enabled">已启用</button>
+            <button class="filter-btn" data-filter="disabled">已禁用</button>
+          </div>
         </div>
-        <div class="actions">
+        <div class="actions" id="accountActions">
+          <button class="ghost btn" id="toggleBatchMode">批量操作</button>
+          <button class="ghost btn hidden" id="selectAllAccounts">全选</button>
+          <button class="ghost btn hidden" id="deselectAllAccounts">取消全选</button>
+          <button class="ghost btn hidden" id="enableSelectedAccounts">启用选中</button>
+          <button class="ghost btn hidden" id="disableSelectedAccounts">禁用选中</button>
           <button class="ghost btn" id="reloadAccounts">刷新</button>
         </div>
       </div>
@@ -191,6 +203,9 @@ const state = {
   authTicker: null,
   authWaitTicker: null,
   logs: [],
+  batchMode: false,
+  selectedAccounts: new Set(),
+  filter: 'all',
 };
 
 const els = {
@@ -198,6 +213,11 @@ const els = {
   authHint: document.getElementById('authHint'),
   clearAuth: document.getElementById('clearAuth'),
   reloadAccounts: document.getElementById('reloadAccounts'),
+  toggleBatchMode: document.getElementById('toggleBatchMode'),
+  selectAllAccounts: document.getElementById('selectAllAccounts'),
+  deselectAllAccounts: document.getElementById('deselectAllAccounts'),
+  enableSelectedAccounts: document.getElementById('enableSelectedAccounts'),
+  disableSelectedAccounts: document.getElementById('disableSelectedAccounts'),
   createBtn: document.getElementById('createBtn'),
   accountList: document.getElementById('accountList'),
   authLabel: document.getElementById('auth_label'),
@@ -291,7 +311,17 @@ function renderAccounts() {
   const root = els.accountList;
   root.innerHTML = '';
   if (!state.accounts.length) { root.innerHTML = '<div class="small">暂无账号</div>'; return; }
-  state.accounts.forEach(acc => root.appendChild(buildAccountCard(acc)));
+  let filtered = state.accounts;
+  if (state.filter === 'enabled') filtered = state.accounts.filter(a => a.enabled);
+  else if (state.filter === 'disabled') filtered = state.accounts.filter(a => !a.enabled);
+  if (!filtered.length) { root.innerHTML = '<div class="small">无匹配账号</div>'; return; }
+  filtered.forEach(acc => root.appendChild(buildAccountCard(acc)));
+}
+
+function setFilter(filter) {
+  state.filter = filter;
+  document.querySelectorAll('[data-filter]').forEach(btn => btn.classList.toggle('active', btn.dataset.filter === filter));
+  renderAccounts();
 }
 
 function formatMultiline(val) {
@@ -302,7 +332,25 @@ function formatMultiline(val) {
 
 function buildAccountCard(acc) {
   const card = document.createElement('article'); card.className = 'card';
+  card.style.cursor = 'pointer';
+  if (state.batchMode && state.selectedAccounts.has(acc.id)) {
+    card.style.borderColor = '#111';
+    card.style.borderWidth = '2px';
+  }
   const head = document.createElement('div'); head.className = 'card-head';
+
+  // Checkbox for batch mode
+  if (state.batchMode) {
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = state.selectedAccounts.has(acc.id);
+    checkbox.style.width = '18px';
+    checkbox.style.height = '18px';
+    checkbox.style.cursor = 'pointer';
+    checkbox.onclick = (e) => { e.stopPropagation(); toggleAccountSelection(acc.id); };
+    head.appendChild(checkbox);
+  }
+
   const title = document.createElement('div'); title.style.fontWeight = '700'; title.textContent = acc.label || '未命名';
   const badge = document.createElement('div'); badge.className = 'badge mono'; badge.textContent = acc.id;
   const enabled = document.createElement('div'); enabled.className = 'pill ' + (acc.enabled ? 'ok' : 'bad'); enabled.textContent = acc.enabled ? 'Enabled' : 'Disabled';
@@ -355,10 +403,23 @@ function buildAccountCard(acc) {
   const del = document.createElement('button'); del.className = 'ghost btn'; del.textContent = '删除'; del.onclick = () => deleteAccount(acc.id, del);
   actions.append(save, del); detail.appendChild(actions);
 
-  collapseBtn.onclick = () => {
+  collapseBtn.onclick = (e) => {
+    e.stopPropagation();
     const isHidden = detail.classList.contains('hidden');
     detail.classList.toggle('hidden', !isHidden);
     collapseBtn.textContent = isHidden ? '收起详情' : '展开详情';
+  };
+
+  // Card click handler: batch mode = select/deselect, normal mode = toggle details
+  card.onclick = (e) => {
+    if (e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT') return;
+    if (state.batchMode) {
+      toggleAccountSelection(acc.id);
+    } else {
+      const isHidden = detail.classList.contains('hidden');
+      detail.classList.toggle('hidden', !isHidden);
+      collapseBtn.textContent = isHidden ? '收起详情' : '展开详情';
+    }
   };
 
   card.appendChild(detail);
@@ -374,6 +435,63 @@ async function updateAccount(id, patch, btn, busyText) {
     toast('已更新账号'); await loadAccounts();
   } catch (e) { toast('更新失败: ' + e.message, true); log('更新账号失败: ' + e.message); }
   finally { setBusy(btn, false); }
+}
+
+async function batchUpdateAccounts(enabled, btn) {
+  if (!state.password) return handleAuthLoss('请先登录页验证密码');
+  if (!state.selectedAccounts.size) { toast('请先选择账号', true); return; }
+
+  const action = enabled ? '启用' : '禁用';
+  if (!confirm(`确认${action}选中的 ${state.selectedAccounts.size} 个账号？`)) return;
+
+  setBusy(btn, true, `${action}中...`);
+  try {
+    const r = await authFetch(api('/v2/accounts/batch'), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ account_ids: Array.from(state.selectedAccounts), enabled: enabled })
+    });
+    if (!r.ok) throw new Error(await r.text());
+    const result = await r.json();
+    toast(`已${action} ${result.updated_count} 个账号`);
+    state.selectedAccounts.clear();
+    await loadAccounts();
+  } catch (e) {
+    toast(`批量${action}失败: ` + e.message, true);
+    log(`批量${action}失败: ` + e.message);
+  } finally {
+    setBusy(btn, false);
+  }
+}
+
+function toggleBatchMode() {
+  state.batchMode = !state.batchMode;
+  state.selectedAccounts.clear();
+  els.toggleBatchMode.textContent = state.batchMode ? '退出批量' : '批量操作';
+  els.selectAllAccounts.classList.toggle('hidden', !state.batchMode);
+  els.deselectAllAccounts.classList.toggle('hidden', !state.batchMode);
+  els.enableSelectedAccounts.classList.toggle('hidden', !state.batchMode);
+  els.disableSelectedAccounts.classList.toggle('hidden', !state.batchMode);
+  renderAccounts();
+}
+
+function selectAllAccounts() {
+  state.accounts.forEach(acc => state.selectedAccounts.add(acc.id));
+  renderAccounts();
+}
+
+function deselectAllAccounts() {
+  state.selectedAccounts.clear();
+  renderAccounts();
+}
+
+function toggleAccountSelection(id) {
+  if (state.selectedAccounts.has(id)) {
+    state.selectedAccounts.delete(id);
+  } else {
+    state.selectedAccounts.add(id);
+  }
+  renderAccounts();
 }
 
 async function refreshAccount(id, btn) {
@@ -502,6 +620,12 @@ function switchTab(name) {
 
 function bootstrap() {
   document.querySelectorAll('.tab-btn').forEach(btn => btn.addEventListener('click', () => switchTab(btn.dataset.tab)));
+  document.querySelectorAll('[data-filter]').forEach(btn => btn.addEventListener('click', () => setFilter(btn.dataset.filter)));
+  els.toggleBatchMode.addEventListener('click', toggleBatchMode);
+  els.selectAllAccounts.addEventListener('click', selectAllAccounts);
+  els.deselectAllAccounts.addEventListener('click', deselectAllAccounts);
+  els.enableSelectedAccounts.addEventListener('click', () => batchUpdateAccounts(true, els.enableSelectedAccounts));
+  els.disableSelectedAccounts.addEventListener('click', () => batchUpdateAccounts(false, els.disableSelectedAccounts));
   els.reloadAccounts.addEventListener('click', loadAccounts);
   els.createBtn.addEventListener('click', createAccount);
   els.startAuth.addEventListener('click', startDeviceAuth);

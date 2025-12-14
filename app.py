@@ -389,6 +389,10 @@ class AccountUpdate(BaseModel):
     other: Optional[Dict[str, Any]] = None
     enabled: Optional[bool] = None
 
+class BatchAccountUpdate(BaseModel):
+    account_ids: List[str]
+    enabled: bool
+
 class ChatMessage(BaseModel):
     role: str
     content: Any
@@ -1257,6 +1261,18 @@ if CONSOLE_ENABLED:
     async def list_accounts(_: bool = Depends(verify_admin_password)):
         rows = await _db.fetchall("SELECT * FROM accounts ORDER BY created_at DESC")
         return [_row_to_dict(r) for r in rows]
+
+    @app.patch("/v2/accounts/batch")
+    async def batch_update_accounts(body: BatchAccountUpdate, _: bool = Depends(verify_admin_password)):
+        """批量更新指定账号状态"""
+        if not body.account_ids:
+            return {"updated_count": 0, "enabled": body.enabled}
+        now = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+        placeholders = ",".join("?" * len(body.account_ids))
+        sql = f"UPDATE accounts SET enabled=?, updated_at=? WHERE id IN ({placeholders})"
+        values = (1 if body.enabled else 0, now, *body.account_ids)
+        rowcount = await _db.execute(sql, values)
+        return {"updated_count": rowcount, "enabled": body.enabled}
 
     @app.get("/v2/accounts/{account_id}")
     async def get_account_detail(account_id: str, _: bool = Depends(verify_admin_password)):
