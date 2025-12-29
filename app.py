@@ -654,7 +654,7 @@ async def claude_messages(
                         text_to_count += item.get("text", "")
 
         input_tokens = count_tokens(text_to_count, apply_multiplier=True)
-        handler = ClaudeStreamHandler(model=req.model, input_tokens=input_tokens)
+        handler = ClaudeStreamHandler(model=req.model, input_tokens=input_tokens, conversation_id=conversation_id)
 
         # Try to get the first event to ensure the connection is valid
         # This allows us to return proper HTTP error codes before starting the stream

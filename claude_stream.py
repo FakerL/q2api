@@ -1,6 +1,7 @@
 import json
 import logging
 import importlib.util
+import uuid
 from pathlib import Path
 from typing import AsyncGenerator, Optional, Dict, Any, List, Set
 import tiktoken
@@ -71,7 +72,7 @@ except Exception as e:
     def build_tool_use_input_delta(*args, **kwargs): return ""
 
 class ClaudeStreamHandler:
-    def __init__(self, model: str, input_tokens: int = 0):
+    def __init__(self, model: str, input_tokens: int = 0, conversation_id: Optional[str] = None):
         self.model = model
         self.input_tokens = input_tokens
         self.response_buffer: List[str] = []
@@ -80,7 +81,7 @@ class ClaudeStreamHandler:
         self.content_block_start_sent: bool = False
         self.content_block_stop_sent: bool = False
         self.message_start_sent: bool = False
-        self.conversation_id: Optional[str] = None
+        self.conversation_id: Optional[str] = conversation_id
 
         # Tool use state
         self.current_tool_use: Optional[Dict[str, Any]] = None
@@ -108,7 +109,8 @@ class ClaudeStreamHandler:
         # 1. Message Start (initial-response)
         if event_type == "initial-response":
             if not self.message_start_sent:
-                conv_id = payload.get('conversationId', self.conversation_id or 'unknown')
+                # Use conversation_id from payload if available, otherwise use the one passed to constructor
+                conv_id = payload.get('conversationId') or self.conversation_id or str(uuid.uuid4())
                 self.conversation_id = conv_id
                 yield build_message_start(conv_id, self.model, self.input_tokens)
                 self.message_start_sent = True
