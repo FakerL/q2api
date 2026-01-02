@@ -24,12 +24,24 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Thinking mode hint - matches CLIProxyAPIPlus format
+THINKING_HINT = """<thinking_mode>enabled</thinking_mode>
+<max_thinking_length>200000</max_thinking_length>"""
+
+
+def is_thinking_enabled(req) -> bool:
+    """Check if thinking mode is enabled in request."""
+    thinking = getattr(req, 'thinking', None)
+    if thinking is None:
+        return False
+    if isinstance(thinking, dict):
+        return thinking.get('type') == 'enabled' or thinking.get('budget_tokens', 0) > 0
+    return False
+
 def get_current_timestamp() -> str:
-    """Get current timestamp in Amazon Q format."""
+    """Get current timestamp in CLIProxyAPIPlus format."""
     now = datetime.now().astimezone()
-    weekday = now.strftime("%A")
-    iso_time = now.isoformat(timespec='milliseconds')
-    return f"{weekday}, {iso_time}"
+    return now.strftime("%Y-%m-%d %H:%M:%S %Z")
 
 def map_model_name(claude_model: str) -> str:
     """Map Claude model name to Amazon Q model ID.
@@ -101,9 +113,12 @@ def extract_images_from_content(content: Union[str, List[Dict[str, Any]]]) -> Op
 def convert_tool(tool: ClaudeTool) -> Dict[str, Any]:
     """Convert Claude tool to Amazon Q tool."""
     desc = tool.description or ""
-    if len(desc) > 10240:
-        desc = desc[:10100] + "\n\n...(Full description provided in TOOL DOCUMENTATION section)"
-    
+    # CLIProxyAPIPlus: Ensure non-empty description
+    if not desc.strip():
+        desc = f"Tool: {tool.name}"
+    elif len(desc) > 10240:
+        desc = desc[:10100] + "\n\n...(truncated)"
+
     return {
         "toolSpecification": {
             "name": tool.name,
@@ -216,20 +231,23 @@ def process_history(messages: List[ClaudeMessage]) -> List[Dict[str, Any]]:
             else:
                 text_content = extract_text_from_content(content)
             
-            user_ctx = {
-                "envState": {
-                    "operatingSystem": "macos",
-                    "currentWorkingDirectory": "/"
-                }
-            }
+            user_ctx = {}
             if tool_results:
                 user_ctx["toolResults"] = tool_results
-                
+
             u_msg = {
                 "content": text_content,
                 "userInputMessageContext": user_ctx,
                 "origin": "KIRO_CLI"
             }
+
+            # CLIProxyAPIPlus: Ensure non-empty content
+            if not u_msg["content"].strip():
+                if tool_results:
+                    u_msg["content"] = "Tool results provided."
+                else:
+                    u_msg["content"] = "Continue"
+
             if images:
                 u_msg["images"] = images
                 
@@ -238,10 +256,10 @@ def process_history(messages: List[ClaudeMessage]) -> List[Dict[str, Any]]:
         elif msg.role == "assistant":
             content = msg.content
             text_content = extract_text_from_content(content)
-            
+
+            # CLIProxyAPIPlus: No messageId field
             entry = {
                 "assistantResponseMessage": {
-                    "messageId": str(uuid.uuid4()),
                     "content": text_content
                 }
             }
@@ -350,44 +368,38 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
         else:
             prompt_content = extract_text_from_content(content)
             
-    # 3. Context
-    user_ctx = {
-        "envState": {
-            "operatingSystem": "macos",
-            "currentWorkingDirectory": "/"
-        }
-    }
+    # 3. Context - CLIProxyAPIPlus doesn't use envState
+    user_ctx = {}
     if aq_tools:
         user_ctx["tools"] = aq_tools
     if tool_results:
         user_ctx["toolResults"] = tool_results
-        
-    # 4. Format Content
-    formatted_content = ""
-    if has_tool_result and not prompt_content:
-        formatted_content = ""
-    else:
-        formatted_content = (
-            "--- CONTEXT ENTRY BEGIN ---\n"
-            f"Current time: {get_current_timestamp()}\n"
-            "--- CONTEXT ENTRY END ---\n\n"
-            "--- USER MESSAGE BEGIN ---\n"
-            f"{prompt_content}\n"
-            "--- USER MESSAGE END ---"
-        )
-        
-    if long_desc_tools:
-        docs = []
-        for info in long_desc_tools:
-            docs.append(f"Tool: {info['name']}\nFull Description:\n{info['full_description']}\n")
-        formatted_content = (
-            "--- TOOL DOCUMENTATION BEGIN ---\n"
-            f"{''.join(docs)}"
-            "--- TOOL DOCUMENTATION END ---\n\n"
-            f"{formatted_content}"
-        )
-        
-    if req.system and formatted_content:
+
+    # 4. Format Content - Match CLIProxyAPIPlus structure exactly
+    # Structure:
+    # --- SYSTEM PROMPT ---
+    # <thinking_mode>...</thinking_mode> (if enabled)
+    # <max_thinking_length>...</max_thinking_length> (if enabled)
+    #
+    # [Context: Current time is {timestamp}]
+    #
+    # {system prompt content}
+    # --- END SYSTEM PROMPT ---
+    #
+    # {user content or "Tool results provided."}
+
+    # Build system prompt inner content
+    sys_parts = []
+
+    # 1. Thinking hint (if enabled) - at the very beginning
+    if is_thinking_enabled(req):
+        sys_parts.append(THINKING_HINT)
+
+    # 2. Timestamp context
+    sys_parts.append(f"[Context: Current time is {get_current_timestamp()}]")
+
+    # 3. System prompt content
+    if req.system:
         sys_text = ""
         if isinstance(req.system, str):
             sys_text = req.system
@@ -397,14 +409,22 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
                 if isinstance(b, dict) and b.get("type") == "text":
                     parts.append(b.get("text", ""))
             sys_text = "\n".join(parts)
-            
         if sys_text:
-            formatted_content = (
-                "--- SYSTEM PROMPT BEGIN ---\n"
-                f"{sys_text}\n"
-                "--- SYSTEM PROMPT END ---\n\n"
-                f"{formatted_content}"
-            )
+            sys_parts.append(sys_text)
+
+    # Join system prompt parts and wrap in markers
+    sys_inner = "\n\n".join(sys_parts)
+    formatted_content = f"--- SYSTEM PROMPT ---\n{sys_inner}\n--- END SYSTEM PROMPT ---"
+
+    # 4. Append user content AFTER the system prompt wrapper
+    # CLIProxyAPIPlus: Never send empty content
+    if has_tool_result and not prompt_content:
+        formatted_content += "\n\nTool results provided."
+    elif prompt_content:
+        formatted_content += f"\n\n{prompt_content}"
+    else:
+        # Fallback for empty content
+        formatted_content += "\n\nContinue"
             
     # 5. Model
     model_id = map_model_name(req.model)
