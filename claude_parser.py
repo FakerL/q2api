@@ -150,19 +150,28 @@ def build_message_start(conversation_id: str, model: str = "claude-sonnet-4.5", 
 
 def build_content_block_start(index: int, block_type: str = "text") -> str:
     """Build content_block_start SSE event."""
+    if block_type == "text":
+        block_payload = {"type": "text", "text": ""}
+    elif block_type == "thinking":
+        block_payload = {"type": "thinking", "thinking": ""}
+    else:
+        block_payload = {"type": block_type}
     data = {
         "type": "content_block_start",
         "index": index,
-        "content_block": {"type": block_type, "text": ""} if block_type == "text" else {"type": block_type}
+        "content_block": block_payload
     }
     return _sse_format("content_block_start", data)
 
-def build_content_block_delta(index: int, text: str) -> str:
-    """Build content_block_delta SSE event (text)."""
+def build_content_block_delta(index: int, text: str, delta_type: str = "text_delta", field_name: str = "text") -> str:
+    """Build content_block_delta SSE event."""
+    delta = {"type": delta_type}
+    if field_name:
+        delta[field_name] = text
     data = {
         "type": "content_block_delta",
         "index": index,
-        "delta": {"type": "text_delta", "text": text}
+        "delta": delta
     }
     return _sse_format("content_block_delta", data)
 

@@ -24,9 +24,8 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# Thinking mode hint - matches CLIProxyAPIPlus format
-THINKING_HINT = """<thinking_mode>enabled</thinking_mode>
-<max_thinking_length>200000</max_thinking_length>"""
+# Thinking mode hint - matches main branch format
+THINKING_HINT = "<thinking_mode>interleaved</thinking_mode><max_thinking_length>16000</max_thinking_length>"
 
 
 def is_thinking_enabled(req) -> bool:
@@ -37,6 +36,16 @@ def is_thinking_enabled(req) -> bool:
     if isinstance(thinking, dict):
         return thinking.get('type') == 'enabled' or thinking.get('budget_tokens', 0) > 0
     return False
+
+def _append_thinking_hint(text: str, hint: str = THINKING_HINT) -> str:
+    """Append the thinking hint to text if not already present."""
+    text = text or ""
+    if hint in text:
+        return text
+    if not text:
+        return hint
+    separator = "" if text.endswith(("\n", "\r")) else "\n"
+    return f"{text}{separator}{hint}"
 
 def get_current_timestamp() -> str:
     """Get current timestamp in CLIProxyAPIPlus format."""
@@ -172,7 +181,7 @@ def merge_user_messages(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
     
     return result
 
-def process_history(messages: List[ClaudeMessage]) -> List[Dict[str, Any]]:
+def process_history(messages: List[ClaudeMessage], thinking_enabled: bool = False) -> List[Dict[str, Any]]:
     """Process history messages to match Amazon Q format (alternating user/assistant)."""
     history = []
     seen_tool_use_ids = set()
@@ -230,7 +239,11 @@ def process_history(messages: List[ClaudeMessage]) -> List[Dict[str, Any]]:
                 text_content = "\n".join(text_parts)
             else:
                 text_content = extract_text_from_content(content)
-            
+
+            # Add thinking hint to history messages if thinking is enabled
+            if thinking_enabled:
+                text_content = _append_thinking_hint(text_content, THINKING_HINT)
+
             user_ctx = {}
             if tool_results:
                 user_ctx["toolResults"] = tool_results
@@ -441,7 +454,7 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
         
     # 7. History
     history_msgs = req.messages[:-1] if len(req.messages) > 1 else []
-    aq_history = process_history(history_msgs)
+    aq_history = process_history(history_msgs, thinking_enabled=is_thinking_enabled(req))
     
     # 8. Final Body
     return {
