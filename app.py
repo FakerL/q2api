@@ -450,6 +450,8 @@ async def refresh_access_token_in_db(account_id: str) -> Dict[str, Any]:
 
         new_access = data.get("accessToken")
         new_refresh = data.get("refreshToken", acc.get("refreshToken"))
+        expires_in = data.get("expiresIn", 3600)  # Default 1 hour if not provided
+        expires_at = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() + expires_in))
         now = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
         status = "success"
     except httpx.HTTPError as e:
@@ -485,10 +487,10 @@ async def refresh_access_token_in_db(account_id: str) -> Dict[str, Any]:
     await _db.execute(
         """
         UPDATE accounts
-        SET accessToken=?, refreshToken=?, last_refresh_time=?, last_refresh_status=?, updated_at=?
+        SET accessToken=?, refreshToken=?, expires_at=?, last_refresh_time=?, last_refresh_status=?, updated_at=?
         WHERE id=?
         """,
-        (new_access, new_refresh, now, status, now, account_id),
+        (new_access, new_refresh, expires_at, now, status, now, account_id),
     )
 
     row2 = await _db.fetchone("SELECT * FROM accounts WHERE id=?", (account_id,))
@@ -998,8 +1000,8 @@ async def _create_account_from_tokens(
     acc_id = str(uuid.uuid4())
     await _db.execute(
         """
-        INSERT INTO accounts (id, label, clientId, clientSecret, refreshToken, accessToken, other, last_refresh_time, last_refresh_status, created_at, updated_at, enabled)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO accounts (id, label, clientId, clientSecret, refreshToken, accessToken, other, last_refresh_time, last_refresh_status, created_at, updated_at, enabled, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             acc_id,
@@ -1014,6 +1016,7 @@ async def _create_account_from_tokens(
             now,
             now,
             1 if enabled else 0,
+            None,  # expires_at - will be set on first refresh
         ),
     )
     row = await _db.fetchone("SELECT * FROM accounts WHERE id=?", (acc_id,))
@@ -1170,8 +1173,8 @@ if CONSOLE_ENABLED:
         enabled_val = 1 if (body.enabled is None or body.enabled) else 0
         await _db.execute(
             """
-            INSERT INTO accounts (id, label, clientId, clientSecret, refreshToken, accessToken, other, last_refresh_time, last_refresh_status, created_at, updated_at, enabled)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO accounts (id, label, clientId, clientSecret, refreshToken, accessToken, other, last_refresh_time, last_refresh_status, created_at, updated_at, enabled, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 acc_id,
@@ -1186,6 +1189,7 @@ if CONSOLE_ENABLED:
                 now,
                 now,
                 enabled_val,
+                None,  # expires_at - will be set on first refresh
             ),
         )
         row = await _db.fetchone("SELECT * FROM accounts WHERE id=?", (acc_id,))
@@ -1227,8 +1231,8 @@ if CONSOLE_ENABLED:
 
             await _db.execute(
                 """
-                INSERT INTO accounts (id, label, clientId, clientSecret, refreshToken, accessToken, other, last_refresh_time, last_refresh_status, created_at, updated_at, enabled)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO accounts (id, label, clientId, clientSecret, refreshToken, accessToken, other, last_refresh_time, last_refresh_status, created_at, updated_at, enabled, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     acc_id,
@@ -1243,6 +1247,7 @@ if CONSOLE_ENABLED:
                     now,
                     now,
                     0,  # 初始为禁用状态
+                    None,  # expires_at - will be set on first refresh
                 ),
             )
             new_account_ids.append(acc_id)
@@ -1321,6 +1326,26 @@ if CONSOLE_ENABLED:
     @app.post("/v2/accounts/{account_id}/refresh")
     async def manual_refresh(account_id: str, _: bool = Depends(verify_admin_password)):
         return await refresh_access_token_in_db(account_id)
+
+    @app.post("/v2/chat/test")
+    async def admin_chat_test(req: ChatCompletionRequest, account_id: Optional[str] = None, _: bool = Depends(verify_admin_password)):
+        """Admin chat test - uses admin auth, selects account by id or random."""
+        if account_id:
+            row = await _db.fetchone("SELECT * FROM accounts WHERE id=?", (account_id,))
+            if not row:
+                raise HTTPException(status_code=404, detail="Account not found")
+            account = _row_to_dict(row)
+            # Check if token is expired or missing
+            expires_at = account.get("expires_at")
+            now_str = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+            if not expires_at or expires_at <= now_str:
+                account = await refresh_access_token_in_db(account_id)
+        else:
+            candidates = await _list_enabled_accounts()
+            if not candidates:
+                raise HTTPException(status_code=503, detail="No enabled account available")
+            account = random.choice(candidates)
+        return await chat_completions(req, account)
 
     # ------------------------------------------------------------------------------
     # Simple Frontend (minimal dev test page; full UI in v2/frontend/index.html)

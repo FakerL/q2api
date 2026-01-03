@@ -164,13 +164,18 @@
     </section>
 
     <section class="tab" id="tab-chat">
-      <h2>Chat 测试 (/v1/chat/completions)</h2>
+      <h2>Chat 测试 (/v2/chat/test)</h2>
       <div class="row">
-        <div class="field"><label>model</label><input id="model" value="claude-sonnet-4" /></div>
+        <div class="field"><label>model</label><input id="model" value="claude-haiku-4.5" /></div>
         <div class="field"><label>是否流式</label>
           <select id="stream">
             <option value="false">false</option>
             <option value="true">true</option>
+          </select>
+        </div>
+        <div class="field"><label>账号</label>
+          <select id="chatAccount">
+            <option value="">随机</option>
           </select>
         </div>
         <div class="field" style="flex:0 0 160px;"><label>&nbsp;</label><button class="btn" id="sendBtn">发送请求</button></div>
@@ -178,8 +183,8 @@
       <div class="field">
         <label>messages（JSON）</label>
         <textarea id="messages">[
-  {"role":"system","content":"你是一个乐于助人的助手"},
-  {"role":"user","content":"你好，请讲一个简短的故事\n并分两段输出"}
+  {"role":"system","content":"You are a helpful assistant."},
+  {"role":"user","content":"你好！请讲一个简短的小故事。"}
 ]</textarea>
       </div>
       <div class="field">
@@ -228,6 +233,7 @@ const els = {
   startAuth: document.getElementById('startAuth'),
   model: document.getElementById('model'),
   stream: document.getElementById('stream'),
+  chatAccount: document.getElementById('chatAccount'),
   messages: document.getElementById('messages'),
   sendBtn: document.getElementById('sendBtn'),
   out: document.getElementById('out'),
@@ -300,11 +306,25 @@ async function loadAccounts() {
     const data = await r.json();
     state.accounts = Array.isArray(data) ? data : [];
     renderAccounts();
+    populateChatAccountSelector();
     log(`已载入 ${state.accounts.length} 个账号`);
   } catch (e) {
     els.accountList.innerHTML = `<div class="small">加载失败：${escapeHtml(e.message)}</div>`;
     log(`拉取账号失败: ${e.message}`);
   }
+}
+
+function populateChatAccountSelector() {
+  if (!els.chatAccount) return;
+  const current = els.chatAccount.value;
+  els.chatAccount.innerHTML = '<option value="">随机</option>';
+  state.accounts.forEach(acc => {
+    const opt = document.createElement('option');
+    opt.value = acc.id;
+    opt.textContent = (acc.label || acc.id) + (acc.enabled ? '' : ' (禁用)');
+    els.chatAccount.appendChild(opt);
+  });
+  if (current) els.chatAccount.value = current;
 }
 
 function renderAccounts() {
@@ -594,18 +614,67 @@ async function claimDeviceAuth(auto=false) {
   finally { resetAuthSessionTimers(); if (!auto) { /* no button to reset */ } }
 }
 
+const TEST_PROMPTS = [
+  '你好！请讲一个简短的小故事。',
+  '请用一句话介绍一下你自己。',
+  '今天天气怎么样？',
+  '帮我写一首简短的诗。',
+  '你最喜欢什么颜色？为什么？',
+  '请给我讲一个笑话。',
+  '如果你是一只动物，你会是什么？',
+  '请用三个词形容快乐。',
+  '你觉得什么是幸福？',
+  '请推荐一本好书。',
+  '你喜欢什么季节？',
+  '请描述一下大海。',
+  '你有什么爱好？',
+  '请给我一个生活小建议。',
+  '你觉得友谊重要吗？',
+  '请用一句话形容月亮。',
+  '你最喜欢什么食物？',
+  '请写一段鼓励的话。',
+  '你觉得什么是成功？',
+  '请描述一下春天。',
+  '你喜欢音乐吗？',
+  '请给我讲一个有趣的事实。',
+  '你觉得什么是勇气？',
+  '请推荐一部电影。',
+  '你喜欢旅行吗？',
+  '请描述一下星空。',
+  '你觉得什么是智慧？',
+  '请写一句祝福语。',
+  '你喜欢什么运动？',
+  '请描述一下森林。',
+  '你觉得什么是爱？',
+  '请给我一个学习建议。',
+  '你喜欢什么花？',
+  '请描述一下雨天。',
+  '你觉得什么是自由？',
+  '请推荐一首歌。',
+  '你喜欢什么动物？',
+  '请描述一下日出。',
+];
+
 async function sendChat() {
   if (!state.password) return handleAuthLoss('请先登录页验证密码');
   els.out.textContent = ''; let messages;
   try { messages = JSON.parse(els.messages.value); } catch (e) { els.out.textContent = 'messages 不是合法 JSON'; return; }
+  // Randomize user prompt if it matches the default pattern
+  const userMsg = messages.find(m => m.role === 'user');
+  if (userMsg && TEST_PROMPTS.includes(userMsg.content)) {
+    userMsg.content = TEST_PROMPTS[Math.floor(Math.random() * TEST_PROMPTS.length)];
+    els.messages.value = JSON.stringify(messages, null, 2);
+  }
   const body = { model: els.model.value.trim(), messages, stream: els.stream.value === 'true' };
   const headers = { 'Content-Type': 'application/json' }; setBusy(els.sendBtn, true, '发送中...');
+  const accountId = els.chatAccount?.value || '';
+  const endpoint = accountId ? `/v2/chat/test?account_id=${encodeURIComponent(accountId)}` : '/v2/chat/test';
   try {
     if (!body.stream) {
-      const r = await authFetch(api('/v1/chat/completions'), { method:'POST', headers, body: JSON.stringify(body) }); const text = await r.text();
+      const r = await authFetch(api(endpoint), { method:'POST', headers, body: JSON.stringify(body) }); const text = await r.text();
       try { els.out.textContent = JSON.stringify(JSON.parse(text), null, 2); } catch { els.out.textContent = text; }
     } else {
-      const r = await authFetch(api('/v1/chat/completions'), { method:'POST', headers, body: JSON.stringify(body) });
+      const r = await authFetch(api(endpoint), { method:'POST', headers, body: JSON.stringify(body) });
       const reader = r.body.getReader(); const decoder = new TextDecoder();
       while (true) { const {value, done} = await reader.read(); if (done) break; els.out.textContent += decoder.decode(value, {stream:true}); }
     }
@@ -631,6 +700,13 @@ function bootstrap() {
   els.startAuth.addEventListener('click', startDeviceAuth);
   els.sendBtn.addEventListener('click', sendChat);
   els.clearAuth.addEventListener('click', () => { handleAuthLoss('手动清除凭证'); });
+
+  // Randomize initial test prompt
+  const randomPrompt = TEST_PROMPTS[Math.floor(Math.random() * TEST_PROMPTS.length)];
+  els.messages.value = JSON.stringify([
+    {"role":"system","content":"You are a helpful assistant."},
+    {"role":"user","content":randomPrompt}
+  ], null, 2);
 
   if (state.password) {
     setAuthVisual('ok', '已从本地读取密码，可直接操作。'); loadAccounts();
