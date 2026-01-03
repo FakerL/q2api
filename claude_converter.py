@@ -22,35 +22,86 @@ except ImportError:
              # But app.py loads this module.
              pass
 
+import re
+
 logger = logging.getLogger(__name__)
 
-# Thinking mode hint - matches main branch format
-THINKING_HINT = "<thinking_mode>interleaved</thinking_mode><max_thinking_length>16000</max_thinking_length>"
+# Thinking mode hint - matches CLIProxyAPIPlus format with higher token budget
+THINKING_HINT = "<thinking_mode>interleaved</thinking_mode><max_thinking_length>200000</max_thinking_length>"
+
+# Pattern for detecting AMP/Cursor format thinking tags
+THINKING_MODE_PATTERN = re.compile(r"<thinking_mode>(.*?)</thinking_mode>")
 
 
-def is_thinking_enabled(req) -> bool:
-    """Check if thinking mode is enabled in request."""
+def is_thinking_enabled(req, headers=None) -> bool:
+    """Check if thinking mode is enabled in request or headers.
+
+    Supports multiple formats:
+    - Anthropic-Beta header with interleaved-thinking
+    - Claude API format: thinking.type = "enabled"
+    - OpenAI format: reasoning_effort parameter
+    - AMP/Cursor format: <thinking_mode>interleaved</thinking_mode> in system prompt
+    - Model name hints: model contains "thinking" or "reason"
+    """
+    # Check Anthropic-Beta header first (Claude Code uses this)
+    if headers and is_thinking_enabled_from_header(headers):
+        return True
+
+    # Check Claude API format
     thinking = getattr(req, 'thinking', None)
-    if thinking is None:
-        return False
-    if isinstance(thinking, dict):
-        return thinking.get('type') == 'enabled' or thinking.get('budget_tokens', 0) > 0
+    if thinking and isinstance(thinking, dict):
+        if thinking.get('type') == 'enabled' or thinking.get('budget_tokens', 0) > 0:
+            return True
+
+    # Check OpenAI reasoning_effort format
+    reasoning_effort = getattr(req, 'reasoning_effort', None)
+    if reasoning_effort and reasoning_effort not in ['', 'none']:
+        return True
+
+    # Check AMP/Cursor format: <thinking_mode>interleaved</thinking_mode> in system prompt
+    body_str = ""
+    if hasattr(req, 'system') and req.system:
+        if isinstance(req.system, str):
+            body_str = req.system
+        elif isinstance(req.system, list):
+            body_str = " ".join(b.get("text", "") for b in req.system if isinstance(b, dict))
+
+    if body_str and "<thinking_mode>" in body_str:
+        match = THINKING_MODE_PATTERN.search(body_str)
+        if match and match.group(1) in ("interleaved", "enabled"):
+            logger.debug(f"Thinking mode enabled via AMP/Cursor format: {match.group(1)}")
+            return True
+
+    # Check model name hints
+    model = getattr(req, 'model', '')
+    if model and ('thinking' in model.lower() or 'reason' in model.lower()):
+        logger.debug(f"Thinking mode enabled via model name hint: {model}")
+        return True
+
     return False
 
-def _append_thinking_hint(text: str, hint: str = THINKING_HINT) -> str:
-    """Append the thinking hint to text if not already present."""
-    text = text or ""
-    if hint in text:
-        return text
-    if not text:
-        return hint
-    separator = "" if text.endswith(("\n", "\r")) else "\n"
-    return f"{text}{separator}{hint}"
+def is_thinking_enabled_from_header(headers) -> bool:
+    """Check if thinking mode is enabled via Anthropic-Beta header."""
+    if not headers:
+        return False
+    beta_header = headers.get('Anthropic-Beta', '')
+    return 'interleaved-thinking' in beta_header
 
-def get_current_timestamp() -> str:
-    """Get current timestamp in CLIProxyAPIPlus format."""
-    now = datetime.now().astimezone()
-    return now.strftime("%Y-%m-%d %H:%M:%S %Z")
+def has_thinking_tag_in_body(req) -> bool:
+    """Check if request already contains thinking configuration tags.
+
+    This prevents duplicate injection when client (e.g., Claude Code) already includes thinking config.
+    """
+    if hasattr(req, 'system') and req.system:
+        sys_text = ""
+        if isinstance(req.system, str):
+            sys_text = req.system
+        elif isinstance(req.system, list):
+            sys_text = " ".join(b.get("text", "") for b in req.system if isinstance(b, dict))
+        if "<thinking_mode>" in sys_text or "<max_thinking_length>" in sys_text:
+            return True
+    return False
+
 
 def map_model_name(claude_model: str) -> str:
     """Map Claude model name to Amazon Q model ID.
@@ -70,6 +121,10 @@ def map_model_name(claude_model: str) -> str:
         "claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
         "claude-haiku-4-5-20251001": "claude-haiku-4.5",
         "claude-opus-4-5-20251101": "claude-opus-4.5",
+        # Hyphenated variants (kiro format)
+        "claude-opus-4-5": "claude-opus-4.5",
+        "claude-sonnet-4-5": "claude-sonnet-4.5",
+        "claude-haiku-4-5": "claude-haiku-4.5",
     }
 
     model_lower = claude_model.lower()
@@ -119,66 +174,106 @@ def extract_images_from_content(content: Union[str, List[Dict[str, Any]]]) -> Op
                 })
     return images if images else None
 
+def extract_tool_choice_hint(req: ClaudeRequest) -> str:
+    """Extract tool_choice from Claude request and return system prompt hint."""
+    if not hasattr(req, 'tool_choice') or not req.tool_choice:
+        return ""
+
+    tool_choice = req.tool_choice
+    if isinstance(tool_choice, dict):
+        choice_type = tool_choice.get('type', '')
+        if choice_type == 'any':
+            return "[INSTRUCTION: You MUST use at least one of the available tools to respond. Do not respond with text only - always make a tool call.]"
+        elif choice_type == 'tool':
+            tool_name = tool_choice.get('name', '')
+            if tool_name:
+                return f"[INSTRUCTION: You MUST use the tool named '{tool_name}' to respond. Do not use any other tool or respond with text only.]"
+
+    return ""
+
+def shorten_tool_name_if_needed(name: str) -> str:
+    """Shorten tool names that exceed 64 characters for MCP compatibility."""
+    limit = 64
+    if len(name) <= limit:
+        return name
+
+    # For MCP tools, preserve prefix and last segment
+    if name.startswith("mcp__"):
+        idx = name.rfind("__")
+        if idx > 0:
+            candidate = "mcp__" + name[idx+2:]
+            return candidate[:limit] if len(candidate) > limit else candidate
+
+    return name[:limit]
+
 def convert_tool(tool: ClaudeTool) -> Dict[str, Any]:
     """Convert Claude tool to Amazon Q tool."""
+    # Shorten tool name if needed
+    name = shorten_tool_name_if_needed(tool.name)
+
     desc = tool.description or ""
-    # CLIProxyAPIPlus: Ensure non-empty description
+    # Ensure non-empty description
     if not desc.strip():
-        desc = f"Tool: {tool.name}"
-    elif len(desc) > 10240:
-        desc = desc[:10100] + "\n\n...(truncated)"
+        desc = f"Tool: {name}"
+        logger.debug(f"Tool '{name}' has empty description, using default")
+
+    # Enhanced truncation with UTF-8 safety
+    max_desc_len = 10240
+    if len(desc) > max_desc_len:
+        # Find safe truncation point to avoid breaking UTF-8 characters
+        trunc_len = max_desc_len - 30
+        while trunc_len > 0 and not desc[trunc_len:trunc_len+1].encode('utf-8', errors='ignore'):
+            trunc_len -= 1
+        desc = desc[:trunc_len] + "... (description truncated)"
+        logger.debug(f"Tool '{name}' description truncated from {len(tool.description)} to {len(desc)} chars")
 
     return {
         "toolSpecification": {
-            "name": tool.name,
+            "name": name,
             "description": desc,
             "inputSchema": {"json": tool.input_schema}
         }
     }
 
 def merge_user_messages(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Merge consecutive user messages, keeping only the last 2 messages' images."""
+    """Merge consecutive user messages into one."""
     if not messages:
         return {}
-    
+
     all_contents = []
     base_context = None
     base_origin = None
     base_model = None
     all_images = []
-    
+
     for msg in messages:
         content = msg.get("content", "")
         if base_context is None:
             base_context = msg.get("userInputMessageContext", {})
         if base_origin is None:
-            base_origin = msg.get("origin", "CLI")
+            base_origin = msg.get("origin", "KIRO_CLI")
         if base_model is None:
             base_model = msg.get("modelId")
-        
+
         if content:
             all_contents.append(content)
-        
+
         # Collect images from each message
         msg_images = msg.get("images")
         if msg_images:
-            all_images.append(msg_images)
-    
+            all_images.extend(msg_images)
+
     result = {
         "content": "\n\n".join(all_contents),
         "userInputMessageContext": base_context or {},
         "origin": base_origin or "KIRO_CLI",
         "modelId": base_model
     }
-    
-    # Only keep images from the last 2 messages that have images
+
+    # Keep all images
     if all_images:
-        kept_images = []
-        for img_list in all_images[-2:]:  # Take last 2 messages' images
-            kept_images.extend(img_list)
-        if kept_images:
-            result["images"] = kept_images
-    
+        result["images"] = all_images
+
     return result
 
 def process_history(messages: List[ClaudeMessage], thinking_enabled: bool = False) -> List[Dict[str, Any]]:
@@ -239,10 +334,6 @@ def process_history(messages: List[ClaudeMessage], thinking_enabled: bool = Fals
                 text_content = "\n".join(text_parts)
             else:
                 text_content = extract_text_from_content(content)
-
-            # Add thinking hint to history messages if thinking is enabled
-            if thinking_enabled:
-                text_content = _append_thinking_hint(text_content, THINKING_HINT)
 
             user_ctx = {}
             if tool_results:
@@ -404,12 +495,14 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
     # Build system prompt inner content
     sys_parts = []
 
-    # 1. Thinking hint (if enabled) - at the very beginning
-    if is_thinking_enabled(req):
+    # 1. Thinking hint - only inject if not already present in system prompt
+    # CLIProxyAPIPlus: Skip injection if client (e.g., Claude Code) already includes thinking config
+    if is_thinking_enabled(req) and not has_thinking_tag_in_body(req):
         sys_parts.append(THINKING_HINT)
 
     # 2. Timestamp context
-    sys_parts.append(f"[Context: Current time is {get_current_timestamp()}]")
+    timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+    sys_parts.append(f"[Context: Current time is {timestamp}]")
 
     # 3. System prompt content
     if req.system:
@@ -424,6 +517,11 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
             sys_text = "\n".join(parts)
         if sys_text:
             sys_parts.append(sys_text)
+
+    # 4. Tool choice hint (if specified)
+    tool_choice_hint = extract_tool_choice_hint(req)
+    if tool_choice_hint:
+        sys_parts.append(tool_choice_hint)
 
     # Join system prompt parts and wrap in markers
     sys_inner = "\n\n".join(sys_parts)

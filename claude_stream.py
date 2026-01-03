@@ -2,6 +2,7 @@ import json
 import logging
 import importlib.util
 import uuid
+import re
 from pathlib import Path
 from typing import AsyncGenerator, Optional, Dict, Any, List, Set
 import tiktoken
@@ -20,6 +21,245 @@ except Exception:
 
 THINKING_START_TAG = "<thinking>"
 THINKING_END_TAG = "</thinking>"
+
+# Pattern for extracting embedded tool calls: [Called tool_name with args: {...}]
+EMBEDDED_TOOL_PATTERN = re.compile(r'\[Called\s+([A-Za-z0-9_.-]+)\s+with\s+args:\s*')
+# Pattern for removing trailing commas in JSON
+TRAILING_COMMA_PATTERN = re.compile(r',\s*([}\]])')
+
+# ------------------------------------------------------------------------------
+# JSON Repair Utilities
+# ------------------------------------------------------------------------------
+
+def escape_newlines_in_strings(raw: str) -> str:
+    """Escape literal newlines, tabs, and carriage returns inside JSON string values."""
+    result = []
+    in_string = False
+    escaped = False
+    for c in raw:
+        if escaped:
+            result.append(c)
+            escaped = False
+            continue
+        if c == '\\' and in_string:
+            result.append(c)
+            escaped = True
+            continue
+        if c == '"':
+            in_string = not in_string
+            result.append(c)
+            continue
+        if in_string:
+            if c == '\n':
+                result.append('\\n')
+            elif c == '\r':
+                result.append('\\r')
+            elif c == '\t':
+                result.append('\\t')
+            else:
+                result.append(c)
+        else:
+            result.append(c)
+    return ''.join(result)
+
+
+def repair_json(json_string: str) -> str:
+    """Attempt to fix common JSON issues (trailing commas, unescaped newlines, unbalanced brackets).
+
+    Conservative strategy:
+    1. First try to parse JSON directly - if valid, return as-is
+    2. Only attempt repair if parsing fails
+    3. After repair, validate the result - if still invalid, return original
+    """
+    if not json_string:
+        return "{}"
+
+    s = json_string.strip()
+    if not s:
+        return "{}"
+
+    # Try parsing first - if valid, return unchanged
+    try:
+        json.loads(s)
+        return s
+    except json.JSONDecodeError:
+        pass
+
+    original = s
+
+    # Escape newlines in strings
+    s = escape_newlines_in_strings(s)
+
+    # Remove trailing commas before closing braces/brackets
+    s = TRAILING_COMMA_PATTERN.sub(r'\1', s)
+
+    # Calculate bracket balance
+    brace_count = 0
+    bracket_count = 0
+    in_string = False
+    escape = False
+
+    for c in s:
+        if escape:
+            escape = False
+            continue
+        if c == '\\':
+            escape = True
+            continue
+        if c == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if c == '{':
+            brace_count += 1
+        elif c == '}':
+            brace_count -= 1
+        elif c == '[':
+            bracket_count += 1
+        elif c == ']':
+            bracket_count -= 1
+
+    # Add missing closing brackets
+    s += '}' * max(0, brace_count)
+    s += ']' * max(0, bracket_count)
+
+    # Validate repaired JSON
+    try:
+        json.loads(s)
+        logger.debug("repair_json: successfully repaired JSON")
+        return s
+    except json.JSONDecodeError:
+        logger.warning("repair_json: repair failed to produce valid JSON, returning original")
+        return original
+
+
+# ------------------------------------------------------------------------------
+# Embedded Tool Call Extraction
+# ------------------------------------------------------------------------------
+
+def find_matching_bracket(text: str, start: int) -> int:
+    """Find the index of the closing brace that matches the opening one at start.
+
+    Handles nested objects and strings correctly.
+    Returns -1 if no matching bracket is found.
+    """
+    if start >= len(text) or text[start] != '{':
+        return -1
+
+    depth = 1
+    in_string = False
+    escape_next = False
+
+    for i in range(start + 1, len(text)):
+        c = text[i]
+
+        if escape_next:
+            escape_next = False
+            continue
+
+        if c == '\\' and in_string:
+            escape_next = True
+            continue
+
+        if c == '"':
+            in_string = not in_string
+            continue
+
+        if not in_string:
+            if c == '{':
+                depth += 1
+            elif c == '}':
+                depth -= 1
+                if depth == 0:
+                    return i
+
+    return -1
+
+
+def parse_embedded_tool_calls(text: str, processed_ids: Set[str]) -> tuple:
+    """Extract [Called tool_name with args: {...}] format from text.
+
+    Kiro sometimes embeds tool calls in text content instead of using toolUseEvent.
+    Returns the cleaned text (with tool calls removed) and extracted tool uses.
+
+    Args:
+        text: The text content to search for embedded tool calls
+        processed_ids: Set of already processed tool call dedupe keys (name:json)
+
+    Returns:
+        Tuple of (cleaned_text, list of tool use dicts)
+    """
+    if "[Called" not in text:
+        return text, []
+
+    tool_uses = []
+    matches = list(EMBEDDED_TOOL_PATTERN.finditer(text))
+    if not matches:
+        return text, []
+
+    clean_text = text
+
+    # Process matches in reverse order to maintain correct indices when removing
+    for match in reversed(matches):
+        tool_name = match.group(1)
+        json_start = match.end()
+
+        # Skip whitespace to find the opening brace
+        while json_start < len(text) and text[json_start] in ' \t':
+            json_start += 1
+
+        if json_start >= len(text) or text[json_start] != '{':
+            continue
+
+        # Find matching closing bracket
+        json_end = find_matching_bracket(text, json_start)
+        if json_end < 0:
+            continue
+
+        json_str = text[json_start:json_end + 1]
+
+        # Find the closing ] after the JSON
+        closing = json_end + 1
+        while closing < len(text) and text[closing] != ']':
+            closing += 1
+        if closing >= len(text):
+            continue
+
+        match_end = closing + 1
+
+        # Repair and parse JSON
+        repaired = repair_json(json_str)
+        try:
+            input_map = json.loads(repaired)
+        except json.JSONDecodeError:
+            logger.debug(f"Failed to parse embedded tool call JSON: {json_str}")
+            continue
+
+        # Generate unique tool ID
+        tool_use_id = f"toolu_{uuid.uuid4().hex[:12]}"
+
+        # Check for duplicates using name+input as key
+        dedupe_key = f"{tool_name}:{repaired}"
+        if dedupe_key in processed_ids:
+            logger.debug(f"Skipping duplicate embedded tool call: {tool_name}")
+            # Still remove from text even if duplicate
+            clean_text = clean_text[:match.start()] + clean_text[match_end:]
+            continue
+        processed_ids.add(dedupe_key)
+
+        tool_uses.append({
+            "toolUseId": tool_use_id,
+            "name": tool_name,
+            "input": input_map
+        })
+
+        logger.info(f"Extracted embedded tool call: {tool_name} (ID: {tool_use_id})")
+
+        # Remove from clean text
+        clean_text = clean_text[:match.start()] + clean_text[match_end:]
+
+    return clean_text, tool_uses
 
 def _pending_tag_suffix(buffer: str, tag: str) -> int:
     """Length of the suffix of buffer that matches the prefix of tag (for partial matches)."""
@@ -91,6 +331,9 @@ class ClaudeStreamHandler:
         self._processed_tool_use_ids: Set[str] = set()
         self.all_tool_inputs: List[str] = []
 
+        # Embedded tool call deduplication (for [Called ...] format extraction)
+        self._embedded_tool_dedupe_keys: Set[str] = set()
+
         # Think tag state
         self.in_think_block: bool = False
         self.think_buffer: str = ""
@@ -125,6 +368,11 @@ class ClaudeStreamHandler:
                 yield build_content_block_stop(self.content_block_index)
                 self.content_block_stop_sent = True
                 self.current_tool_use = None
+
+            # Extract embedded tool calls from content (Kiro sometimes uses [Called ...] format)
+            embedded_tools = []
+            if content:
+                content, embedded_tools = parse_embedded_tool_calls(content, self._embedded_tool_dedupe_keys)
 
             # Process content with think tag detection
             if content:
@@ -232,6 +480,36 @@ class ClaudeStreamHandler:
                             self.content_block_stop_sent = True
                             self.content_block_start_sent = False
                             self.in_think_block = False
+
+            # Emit embedded tool calls extracted from content
+            for tool in embedded_tools:
+                # Close any open content block before emitting tool use
+                if self.content_block_start_sent and not self.content_block_stop_sent:
+                    yield build_content_block_stop(self.content_block_index)
+                    self.content_block_stop_sent = True
+                    self.content_block_start_sent = False
+
+                tool_use_id = tool["toolUseId"]
+                tool_name = tool["name"]
+                tool_input = tool["input"]
+
+                # Track this tool use ID
+                self._processed_tool_use_ids.add(tool_use_id)
+                self.content_block_index += 1
+
+                # Emit tool_use block
+                yield build_tool_use_start(self.content_block_index, tool_use_id, tool_name)
+
+                # Emit the input as JSON
+                input_json = json.dumps(tool_input, ensure_ascii=False)
+                yield build_tool_use_input_delta(self.content_block_index, input_json)
+                self.all_tool_inputs.append(input_json)
+
+                # Close the tool use block
+                yield build_content_block_stop(self.content_block_index)
+                self.content_block_stop_sent = False
+                self.content_block_started = False
+                self.content_block_start_sent = False
 
         # 3. Tool Use (toolUseEvent)
         elif event_type == "toolUseEvent":
