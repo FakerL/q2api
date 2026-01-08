@@ -23,8 +23,93 @@ except ImportError:
              pass
 
 import re
+import base64
 
 logger = logging.getLogger(__name__)
+
+# Image support constants
+SUPPORTED_IMAGE_FORMATS = {
+    "image/jpeg": "jpeg",
+    "image/png": "png",
+    "image/gif": "gif",
+    "image/webp": "webp",
+}
+MAX_IMAGE_SIZE = 20 * 1024 * 1024  # 20MB
+
+# Data URL pattern: data:[<mediatype>][;base64],<data>
+DATA_URL_PATTERN = re.compile(r'^data:([^;,]+)(;base64)?,(.+)$', re.DOTALL)
+
+
+def parse_data_url(data_url: str) -> tuple:
+    """Parse a data URL and extract media type and base64 data.
+
+    Args:
+        data_url: Data URL in format data:[<mediatype>][;base64],<data>
+
+    Returns:
+        Tuple of (media_type, base64_data)
+
+    Raises:
+        ValueError: If the data URL is invalid or not base64 encoded
+    """
+    match = DATA_URL_PATTERN.match(data_url)
+    if not match:
+        raise ValueError("Invalid data URL format")
+
+    media_type = match.group(1)
+    is_base64 = match.group(2) == ";base64"
+    data = match.group(3)
+
+    if not is_base64:
+        raise ValueError("Only base64 encoded data URLs are supported")
+
+    if media_type not in SUPPORTED_IMAGE_FORMATS:
+        raise ValueError(f"Unsupported image format: {media_type}")
+
+    # Validate base64 encoding
+    try:
+        decoded = base64.b64decode(data)
+        if len(decoded) > MAX_IMAGE_SIZE:
+            raise ValueError(f"Image too large: {len(decoded)} bytes (max {MAX_IMAGE_SIZE})")
+    except Exception as e:
+        if "Image too large" in str(e):
+            raise
+        raise ValueError(f"Invalid base64 encoding: {e}")
+
+    return media_type, data
+
+
+def convert_image_url_to_image_source(image_url_block: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Convert OpenAI-style image_url block to Anthropic-style image source.
+
+    Args:
+        image_url_block: Dict with "image_url" key containing {"url": "data:..."}
+
+    Returns:
+        Dict with type, media_type, and data for Anthropic format, or None on error
+    """
+    image_url = image_url_block.get("image_url", {})
+    url = image_url.get("url", "") if isinstance(image_url, dict) else ""
+
+    if not url:
+        logger.warning("image_url block missing url field")
+        return None
+
+    if not url.startswith("data:"):
+        logger.warning("Only data URLs are supported for image_url, got: %s...", url[:50])
+        return None
+
+    try:
+        media_type, base64_data = parse_data_url(url)
+        return {
+            "type": "base64",
+            "media_type": media_type,
+            "data": base64_data
+        }
+    except ValueError as e:
+        logger.warning("Failed to parse data URL: %s", e)
+        return None
+
 
 # Thinking mode hint - matches CLIProxyAPIPlus format with higher token budget
 THINKING_HINT = "<thinking_mode>interleaved</thinking_mode><max_thinking_length>200000</max_thinking_length>"
@@ -155,13 +240,22 @@ def extract_text_from_content(content: Union[str, List[Dict[str, Any]]]) -> str:
     return ""
 
 def extract_images_from_content(content: Union[str, List[Dict[str, Any]]]) -> Optional[List[Dict[str, Any]]]:
-    """Extract images from Claude content and convert to Amazon Q format."""
+    """Extract images from Claude content and convert to Amazon Q format.
+
+    Supports both Anthropic format (type: "image") and OpenAI format (type: "image_url").
+    """
     if not isinstance(content, list):
         return None
-    
+
     images = []
     for block in content:
-        if isinstance(block, dict) and block.get("type") == "image":
+        if not isinstance(block, dict):
+            continue
+
+        block_type = block.get("type")
+
+        # Anthropic format: type: "image" with source.type: "base64"
+        if block_type == "image":
             source = block.get("source", {})
             if source.get("type") == "base64":
                 media_type = source.get("media_type", "image/png")
@@ -172,6 +266,20 @@ def extract_images_from_content(content: Union[str, List[Dict[str, Any]]]) -> Op
                         "bytes": source.get("data", "")
                     }
                 })
+
+        # OpenAI format: type: "image_url" with image_url.url: "data:..."
+        elif block_type == "image_url":
+            image_source = convert_image_url_to_image_source(block)
+            if image_source:
+                media_type = image_source.get("media_type", "image/png")
+                fmt = SUPPORTED_IMAGE_FORMATS.get(media_type, "png")
+                images.append({
+                    "format": fmt,
+                    "source": {
+                        "bytes": image_source.get("data", "")
+                    }
+                })
+
     return images if images else None
 
 def extract_tool_choice_hint(req: ClaudeRequest) -> str:
