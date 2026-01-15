@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import traceback
 import uuid
 import time
@@ -801,6 +802,13 @@ async def claude_messages(req: ClaudeRequest, account: Dict[str, Any] = Depends(
         except Exception:
             pass
         await _update_stats(account["id"], False)
+
+        # Extract upstream status code from "Upstream error {code}: {message}"
+        err_msg = str(e)
+        if err_msg.startswith("Upstream error "):
+            match = re.match(r"Upstream error (\d+):", err_msg)
+            if match:
+                raise HTTPException(status_code=int(match.group(1)), detail=err_msg)
         raise
 
 @app.post("/v1/messages/count_tokens")
@@ -954,6 +962,13 @@ async def chat_completions(req: ChatCompletionRequest, account: Dict[str, Any] =
             except Exception:
                 pass
             await _update_stats(account["id"], False)
+
+            # Extract upstream status code from "Upstream error {code}: {message}"
+            err_msg = str(e)
+            if err_msg.startswith("Upstream error "):
+                match = re.match(r"Upstream error (\d+):", err_msg)
+                if match:
+                    raise HTTPException(status_code=int(match.group(1)), detail=err_msg)
             raise
 
 # ------------------------------------------------------------------------------
