@@ -24,8 +24,106 @@ except ImportError:
 
 import re
 import base64
+import copy
 
 logger = logging.getLogger(__name__)
+
+# Tool compression constants (from CLIProxyAPIPlus)
+TOOL_COMPRESSION_TARGET_SIZE = 20 * 1024  # 20KB
+MIN_TOOL_DESCRIPTION_LENGTH = 50
+
+
+def calculate_tools_size(tools: List[Dict[str, Any]]) -> int:
+    """Calculate the JSON serialized size of the tools list."""
+    if not tools:
+        return 0
+    return len(json.dumps(tools))
+
+
+def simplify_input_schema(schema: Any) -> Any:
+    """Simplify input_schema by keeping only essential fields: type, enum, required."""
+    if schema is None or not isinstance(schema, dict):
+        return schema
+
+    simplified = {}
+    for key in ("type", "enum", "required"):
+        if key in schema:
+            simplified[key] = schema[key]
+
+    if "properties" in schema and isinstance(schema["properties"], dict):
+        simplified["properties"] = {
+            k: simplify_input_schema(v) for k, v in schema["properties"].items()
+        }
+
+    if "items" in schema:
+        simplified["items"] = simplify_input_schema(schema["items"])
+
+    if "additionalProperties" in schema:
+        simplified["additionalProperties"] = simplify_input_schema(schema["additionalProperties"])
+
+    for key in ("anyOf", "oneOf", "allOf"):
+        if key in schema and isinstance(schema[key], list):
+            simplified[key] = [simplify_input_schema(item) for item in schema[key]]
+
+    return simplified
+
+
+def compress_tool_description(desc: str, target_len: int) -> str:
+    """Compress description to target length with UTF-8 safe truncation."""
+    if target_len < MIN_TOOL_DESCRIPTION_LENGTH:
+        target_len = MIN_TOOL_DESCRIPTION_LENGTH
+    if len(desc) <= target_len:
+        return desc
+
+    trunc_len = target_len - 3
+    if trunc_len < MIN_TOOL_DESCRIPTION_LENGTH - 3:
+        trunc_len = MIN_TOOL_DESCRIPTION_LENGTH - 3
+
+    # UTF-8 safe truncation
+    while trunc_len > 0 and (desc[trunc_len] & 0xC0) == 0x80 if isinstance(desc[trunc_len], int) else ord(desc[trunc_len]) >= 0x80 and ord(desc[trunc_len]) < 0xC0:
+        trunc_len -= 1
+
+    return desc[:trunc_len] + "..." if trunc_len > 0 else desc[:MIN_TOOL_DESCRIPTION_LENGTH]
+
+
+def compress_tools_if_needed(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Compress tools if total size exceeds threshold."""
+    if not tools:
+        return tools
+
+    original_size = calculate_tools_size(tools)
+    if original_size <= TOOL_COMPRESSION_TARGET_SIZE:
+        return tools
+
+    logger.info(f"Tools size {original_size} bytes exceeds {TOOL_COMPRESSION_TARGET_SIZE}, compressing")
+
+    # Deep copy to avoid modifying original
+    compressed = copy.deepcopy(tools)
+
+    # Step 1: Simplify input_schema
+    for tool in compressed:
+        spec = tool.get("toolSpecification", {})
+        if "inputSchema" in spec and "json" in spec["inputSchema"]:
+            spec["inputSchema"]["json"] = simplify_input_schema(spec["inputSchema"]["json"])
+
+    size_after_schema = calculate_tools_size(compressed)
+    if size_after_schema <= TOOL_COMPRESSION_TARGET_SIZE:
+        logger.info(f"Compression complete after schema simplification: {size_after_schema} bytes")
+        return compressed
+
+    # Step 2: Compress descriptions proportionally
+    ratio = TOOL_COMPRESSION_TARGET_SIZE / size_after_schema * 0.8
+    for tool in compressed:
+        spec = tool.get("toolSpecification", {})
+        desc = spec.get("description", "")
+        if desc:
+            target_len = max(MIN_TOOL_DESCRIPTION_LENGTH, int(len(desc) * ratio))
+            spec["description"] = compress_tool_description(desc, target_len)
+
+    final_size = calculate_tools_size(compressed)
+    logger.info(f"Compression complete: {original_size} -> {final_size} bytes ({100*(original_size-final_size)/original_size:.1f}% reduction)")
+    return compressed
+
 
 # Image support constants
 SUPPORTED_IMAGE_FORMATS = {
@@ -524,7 +622,9 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
             if t.description and len(t.description) > 10240:
                 long_desc_tools.append({"name": t.name, "full_description": t.description})
             aq_tools.append(convert_tool(t))
-            
+        # Apply dynamic compression if total tools size exceeds threshold
+        aq_tools = compress_tools_if_needed(aq_tools)
+
     # 2. Current Message (last user message)
     last_msg = req.messages[-1] if req.messages else None
     prompt_content = ""
