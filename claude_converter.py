@@ -32,6 +32,15 @@ logger = logging.getLogger(__name__)
 TOOL_COMPRESSION_TARGET_SIZE = 20 * 1024  # 20KB
 MIN_TOOL_DESCRIPTION_LENGTH = 50
 
+# Constants for empty content handling (aligned with CLIProxyAPIPlus)
+# IMPORTANT: Use minimal neutral strings that the model won't mimic in responses.
+# Previously used conversational phrases like "I'll help you with that." which caused
+# the model to parrot them back in agentic sessions with many tool calls.
+DEFAULT_ASSISTANT_CONTENT_WITH_TOOLS = "."
+DEFAULT_ASSISTANT_CONTENT = "."
+DEFAULT_USER_CONTENT_WITH_TOOL_RESULTS = "Tool results provided."
+DEFAULT_USER_CONTENT = "Continue"
+
 
 def calculate_tools_size(tools: List[Dict[str, Any]]) -> int:
     """Calculate the JSON serialized size of the tools list."""
@@ -209,8 +218,9 @@ def convert_image_url_to_image_source(image_url_block: Dict[str, Any]) -> Option
         return None
 
 
-# Thinking mode hint - matches CLIProxyAPIPlus format with higher token budget
-THINKING_HINT = "<thinking_mode>interleaved</thinking_mode><max_thinking_length>200000</max_thinking_length>"
+# Thinking mode hint - matches CLIProxyAPIPlus format
+# Use "enabled" mode with 16000 token budget to reserve space for tool outputs and prevent truncation
+THINKING_HINT = "<thinking_mode>enabled</thinking_mode>\n<max_thinking_length>16000</max_thinking_length>"
 
 # Pattern for detecting AMP/Cursor format thinking tags
 THINKING_MODE_PATTERN = re.compile(r"<thinking_mode>(.*?)</thinking_mode>")
@@ -284,6 +294,21 @@ def has_thinking_tag_in_body(req) -> bool:
         if "<thinking_mode>" in sys_text or "<max_thinking_length>" in sys_text:
             return True
     return False
+
+
+def normalize_origin(origin: str) -> str:
+    """Normalize origin value for Kiro API compatibility.
+
+    Maps various origin values to the canonical forms that Kiro API expects.
+    This matches the behavior in CLIProxyAPIPlus.
+    """
+    origin_map = {
+        "KIRO_CLI": "CLI",
+        "KIRO_AI_EDITOR": "AI_EDITOR",
+        "AMAZON_Q": "CLI",
+        "KIRO_IDE": "AI_EDITOR",
+    }
+    return origin_map.get(origin, origin)
 
 
 def map_model_name(claude_model: str) -> str:
@@ -424,7 +449,8 @@ def convert_tool(tool: ClaudeTool) -> Dict[str, Any]:
         logger.debug(f"Tool '{name}' has empty description, using default")
 
     # Enhanced truncation with UTF-8 safety
-    max_desc_len = 10240
+    # Kiro API limit is 10240 bytes, leave room for "..." suffix
+    max_desc_len = 10237
     if len(desc) > max_desc_len:
         # Find safe truncation point to avoid breaking UTF-8 characters
         trunc_len = max_desc_len - 30
@@ -457,7 +483,7 @@ def merge_user_messages(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
         if base_context is None:
             base_context = msg.get("userInputMessageContext", {})
         if base_origin is None:
-            base_origin = msg.get("origin", "KIRO_CLI")
+            base_origin = msg.get("origin", "CLI")  # Use normalized origin
         if base_model is None:
             base_model = msg.get("modelId")
 
@@ -472,7 +498,7 @@ def merge_user_messages(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
     result = {
         "content": "\n\n".join(all_contents),
         "userInputMessageContext": base_context or {},
-        "origin": base_origin or "KIRO_CLI",
+        "origin": base_origin or "CLI",  # Use normalized origin
         "modelId": base_model
     }
 
@@ -486,9 +512,9 @@ def process_history(messages: List[ClaudeMessage], thinking_enabled: bool = Fals
     """Process history messages to match Amazon Q format (alternating user/assistant)."""
     history = []
     seen_tool_use_ids = set()
-    
+
     raw_history = []
-    
+
     # First pass: convert individual messages
     for msg in messages:
         if msg.role == "user":
@@ -496,7 +522,7 @@ def process_history(messages: List[ClaudeMessage], thinking_enabled: bool = Fals
             text_content = ""
             tool_results = None
             images = extract_images_from_content(content)
-            
+
             if isinstance(content, list):
                 text_parts = []
                 for block in content:
@@ -507,10 +533,10 @@ def process_history(messages: List[ClaudeMessage], thinking_enabled: bool = Fals
                         elif btype == "tool_result":
                             if tool_results is None:
                                 tool_results = []
-                            
+
                             tool_use_id = block.get("tool_use_id")
                             raw_c = block.get("content", [])
-                            
+
                             aq_content = []
                             if isinstance(raw_c, str):
                                 aq_content = [{"text": raw_c}]
@@ -523,10 +549,10 @@ def process_history(messages: List[ClaudeMessage], thinking_enabled: bool = Fals
                                             aq_content.append({"text": item["text"]})
                                     elif isinstance(item, str):
                                         aq_content.append({"text": item})
-                            
+
                             if not any(i.get("text", "").strip() for i in aq_content):
                                 aq_content = [{"text": "Tool use was cancelled by the user"}]
-                                
+
                             # Merge if exists
                             existing = next((r for r in tool_results if r["toolUseId"] == tool_use_id), None)
                             if existing:
@@ -548,21 +574,23 @@ def process_history(messages: List[ClaudeMessage], thinking_enabled: bool = Fals
             u_msg = {
                 "content": text_content,
                 "userInputMessageContext": user_ctx,
-                "origin": "KIRO_CLI"
+                "origin": "CLI"  # Use normalized origin
             }
 
-            # CLIProxyAPIPlus: Ensure non-empty content
+            # CRITICAL FIX (CLIProxyAPIPlus): Ensure non-empty content for ALL user messages
+            # This must happen BEFORE the isLastMessage check to fix compaction requests
             if not u_msg["content"].strip():
                 if tool_results:
-                    u_msg["content"] = "Tool results provided."
+                    u_msg["content"] = DEFAULT_USER_CONTENT_WITH_TOOL_RESULTS
                 else:
-                    u_msg["content"] = "Continue"
+                    u_msg["content"] = DEFAULT_USER_CONTENT
+                logger.debug(f"User content was empty, using default: {u_msg['content']}")
 
             if images:
                 u_msg["images"] = images
-                
+
             raw_history.append({"userInputMessage": u_msg})
-            
+
         elif msg.role == "assistant":
             content = msg.content
             text_content = extract_text_from_content(content)
@@ -573,7 +601,7 @@ def process_history(messages: List[ClaudeMessage], thinking_enabled: bool = Fals
                     "content": text_content
                 }
             }
-            
+
             if isinstance(content, list):
                 tool_uses = []
                 for block in content:
@@ -588,7 +616,16 @@ def process_history(messages: List[ClaudeMessage], thinking_enabled: bool = Fals
                             })
                 if tool_uses:
                     entry["assistantResponseMessage"]["toolUses"] = tool_uses
-            
+
+            # CRITICAL FIX (CLIProxyAPIPlus): Kiro API requires non-empty content for assistant messages
+            # Use minimal neutral string to prevent model parroting
+            if not entry["assistantResponseMessage"]["content"].strip():
+                if entry["assistantResponseMessage"].get("toolUses"):
+                    entry["assistantResponseMessage"]["content"] = DEFAULT_ASSISTANT_CONTENT_WITH_TOOLS
+                else:
+                    entry["assistantResponseMessage"]["content"] = DEFAULT_ASSISTANT_CONTENT
+                logger.debug(f"Assistant content was empty, using default: {entry['assistantResponseMessage']['content']}")
+
             raw_history.append(entry)
 
     # Second pass: merge consecutive user messages
@@ -602,11 +639,11 @@ def process_history(messages: List[ClaudeMessage], thinking_enabled: bool = Fals
                 history.append({"userInputMessage": merged})
                 pending_user_msgs = []
             history.append(item)
-            
+
     if pending_user_msgs:
         merged = merge_user_messages(pending_user_msgs)
         history.append({"userInputMessage": merged})
-        
+
     return history
 
 def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optional[str] = None) -> Dict[str, Any]:
@@ -631,11 +668,11 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
     tool_results = None
     has_tool_result = False
     images = None
-    
+
     if last_msg and last_msg.role == "user":
         content = last_msg.content
         images = extract_images_from_content(content)
-        
+
         if isinstance(content, list):
             text_parts = []
             for block in content:
@@ -647,10 +684,10 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
                         has_tool_result = True
                         if tool_results is None:
                             tool_results = []
-                        
+
                         tid = block.get("tool_use_id")
                         raw_c = block.get("content", [])
-                        
+
                         aq_content = []
                         if isinstance(raw_c, str):
                             aq_content = [{"text": raw_c}]
@@ -663,10 +700,10 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
                                         aq_content.append({"text": item["text"]})
                                 elif isinstance(item, str):
                                     aq_content.append({"text": item})
-                                    
+
                         if not any(i.get("text", "").strip() for i in aq_content):
                             aq_content = [{"text": "Tool use was cancelled by the user"}]
-                            
+
                         existing = next((r for r in tool_results if r["toolUseId"] == tid), None)
                         if existing:
                             existing["content"].extend(aq_content)
@@ -690,15 +727,17 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
     # 4. Format Content - Match CLIProxyAPIPlus structure exactly
     # Structure:
     # --- SYSTEM PROMPT ---
-    # <thinking_mode>...</thinking_mode> (if enabled)
-    # <max_thinking_length>...</max_thinking_length> (if enabled)
+    # <thinking_mode>enabled</thinking_mode> (if enabled)
+    # <max_thinking_length>16000</max_thinking_length> (if enabled)
     #
     # [Context: Current time is {timestamp}]
     #
     # {system prompt content}
+    #
+    # {tool_choice hint}
     # --- END SYSTEM PROMPT ---
     #
-    # {user content or "Tool results provided."}
+    # {user content or fallback}
 
     # Build system prompt inner content
     sys_parts = []
@@ -735,24 +774,26 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
     sys_inner = "\n\n".join(sys_parts)
     formatted_content = f"--- SYSTEM PROMPT ---\n{sys_inner}\n--- END SYSTEM PROMPT ---"
 
-    # 4. Append user content AFTER the system prompt wrapper
-    # CLIProxyAPIPlus: Never send empty content
-    if has_tool_result and not prompt_content:
-        formatted_content += "\n\nTool results provided."
-    elif prompt_content:
+    # 5. Append user content AFTER the system prompt wrapper
+    # CRITICAL FIX (CLIProxyAPIPlus): Never send empty content
+    if has_tool_result and not prompt_content.strip():
+        formatted_content += f"\n\n{DEFAULT_USER_CONTENT_WITH_TOOL_RESULTS}"
+    elif prompt_content.strip():
         formatted_content += f"\n\n{prompt_content}"
     else:
         # Fallback for empty content
-        formatted_content += "\n\nContinue"
-            
-    # 5. Model
+        formatted_content += f"\n\n{DEFAULT_USER_CONTENT}"
+
+    logger.debug(f"Final content length: {len(formatted_content)}, has_tool_result: {has_tool_result}, prompt_content_len: {len(prompt_content)}")
+
+    # 6. Model
     model_id = map_model_name(req.model)
 
-    # 6. User Input Message
+    # 7. User Input Message - use normalized origin
     user_input_msg = {
         "content": formatted_content,
         "userInputMessageContext": user_ctx,
-        "origin": "KIRO_CLI",
+        "origin": normalize_origin("KIRO_CLI"),  # Normalize origin: KIRO_CLI -> CLI
         "modelId": model_id
     }
     if images:
