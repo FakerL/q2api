@@ -41,6 +41,69 @@ DEFAULT_ASSISTANT_CONTENT = "."
 DEFAULT_USER_CONTENT_WITH_TOOL_RESULTS = "Tool results provided."
 DEFAULT_USER_CONTENT = "Continue"
 
+# Kiro Agentic System Prompt - injected for -agentic model variants to prevent timeouts on large writes.
+# AWS Kiro API has a 2-3 minute timeout for large file write operations.
+KIRO_AGENTIC_SYSTEM_PROMPT = """
+# CRITICAL: CHUNKED WRITE PROTOCOL (MANDATORY)
+
+You MUST follow these rules for ALL file operations. Violation causes server timeouts and task failure.
+
+## ABSOLUTE LIMITS
+- **MAXIMUM 350 LINES** per single write/edit operation - NO EXCEPTIONS
+- **RECOMMENDED 300 LINES** or less for optimal performance
+- **NEVER** write entire files in one operation if >300 lines
+
+## MANDATORY CHUNKED WRITE STRATEGY
+
+### For NEW FILES (>300 lines total):
+1. FIRST: Write initial chunk (first 250-300 lines) using write_to_file/fsWrite
+2. THEN: Append remaining content in 250-300 line chunks using file append operations
+3. REPEAT: Continue appending until complete
+
+### For EDITING EXISTING FILES:
+1. Use surgical edits (apply_diff/targeted edits) - change ONLY what's needed
+2. NEVER rewrite entire files - use incremental modifications
+3. Split large refactors into multiple small, focused edits
+
+### For LARGE CODE GENERATION:
+1. Generate in logical sections (imports, types, functions separately)
+2. Write each section as a separate operation
+3. Use append operations for subsequent sections
+
+## EXAMPLES OF CORRECT BEHAVIOR
+
+✅ CORRECT: Writing a 600-line file
+- Operation 1: Write lines 1-300 (initial file creation)
+- Operation 2: Append lines 301-600
+
+✅ CORRECT: Editing multiple functions
+- Operation 1: Edit function A
+- Operation 2: Edit function B
+- Operation 3: Edit function C
+
+❌ WRONG: Writing 500 lines in single operation → TIMEOUT
+❌ WRONG: Rewriting entire file to change 5 lines → TIMEOUT
+❌ WRONG: Generating massive code blocks without chunking → TIMEOUT
+
+## WHY THIS MATTERS
+- Server has 2-3 minute timeout for operations
+- Large writes exceed timeout and FAIL completely
+- Chunked writes are FASTER and more RELIABLE
+- Failed writes waste time and require retry
+
+REMEMBER: When in doubt, write LESS per operation. Multiple small operations > one large operation."""
+
+# Web search alternative hint - injected when web_search tool is filtered
+WEB_SEARCH_ALTERNATIVE_HINT = """[CRITICAL WEB ACCESS INSTRUCTION]
+You have the Fetch/read_url_content tool available. When the user asks about current events, weather, news, or any information that requires web access:
+- DO NOT say you cannot search the web
+- DO NOT refuse to help with web-related queries
+- IMMEDIATELY use the Fetch tool to access relevant URLs
+- Use well-known official websites, documentation sites, or API endpoints
+- Construct appropriate URLs based on the query context
+
+IMPORTANT: Always attempt to fetch information FIRST before declining. You CAN access the web via Fetch."""
+
 
 def calculate_tools_size(tools: List[Dict[str, Any]]) -> int:
     """Calculate the JSON serialized size of the tools list."""
@@ -319,8 +382,15 @@ def map_model_name(claude_model: str) -> str:
     """
     DEFAULT_MODEL = "auto"
 
-    # Available models in the service
-    VALID_MODELS = {"auto", "claude-sonnet-4", "claude-sonnet-4.5", "claude-haiku-4.5", "claude-opus-4.5"}
+    # Available models in the service (aligned with CLIProxyAPIPlus)
+    VALID_MODELS = {
+        "auto",
+        "claude-sonnet-4",
+        "claude-sonnet-4.5",
+        "claude-haiku-4.5",
+        "claude-opus-4.5",
+        "claude-opus-4.6",  # Added per CLIProxyAPIPlus recent update
+    }
 
     # Mapping from canonical names to AWS model IDs
     CANONICAL_TO_SHORT = {
@@ -329,13 +399,19 @@ def map_model_name(claude_model: str) -> str:
         "claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
         "claude-haiku-4-5-20251001": "claude-haiku-4.5",
         "claude-opus-4-5-20251101": "claude-opus-4.5",
+        "claude-opus-4-6-20260201": "claude-opus-4.6",  # Claude Opus 4.6 canonical
         # Hyphenated variants (kiro format)
         "claude-opus-4-5": "claude-opus-4.5",
+        "claude-opus-4-6": "claude-opus-4.6",
         "claude-sonnet-4-5": "claude-sonnet-4.5",
         "claude-haiku-4-5": "claude-haiku-4.5",
     }
 
     model_lower = claude_model.lower()
+
+    # Strip -agentic suffix for model resolution (agentic is handled separately)
+    if "-agentic" in model_lower:
+        model_lower = model_lower.replace("-agentic", "")
 
     # Check if it's a valid short name
     if model_lower in VALID_MODELS:
@@ -437,8 +513,29 @@ def shorten_tool_name_if_needed(name: str) -> str:
 
     return name[:limit]
 
-def convert_tool(tool: ClaudeTool) -> Dict[str, Any]:
-    """Convert Claude tool to Amazon Q tool."""
+def is_web_search_tool(tool_name: str) -> bool:
+    """Check if a tool is a web search tool (should be filtered)."""
+    name_lower = tool_name.lower()
+    return name_lower in ("web_search", "websearch", "web-search")
+
+
+def is_agentic_model(model: str) -> bool:
+    """Check if model is an agentic variant (has -agentic suffix)."""
+    if not model:
+        return False
+    return "-agentic" in model.lower()
+
+
+def convert_tool(tool: ClaudeTool) -> Optional[Dict[str, Any]]:
+    """Convert Claude tool to Amazon Q tool.
+
+    Returns None if the tool should be filtered (e.g., web_search).
+    """
+    # Filter out web_search tools - Kiro doesn't support them
+    if is_web_search_tool(tool.name):
+        logger.info(f"Filtering out unsupported tool: {tool.name}")
+        return None
+
     # Shorten tool name if needed
     name = shorten_tool_name_if_needed(tool.name)
 
@@ -646,19 +743,46 @@ def process_history(messages: List[ClaudeMessage], thinking_enabled: bool = Fals
 
     return history
 
-def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optional[str] = None) -> Dict[str, Any]:
-    """Convert ClaudeRequest to Amazon Q request body."""
+def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optional[str] = None, headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    """Convert ClaudeRequest to Amazon Q request body.
+
+    Aligned with CLIProxyAPIPlus implementation. Supports:
+    - Tool calling with web_search filtering
+    - Agentic mode with chunked write optimization
+    - InferenceConfig (max_tokens, temperature, top_p)
+    - Thinking mode detection (5 methods)
+    - Empty content handling
+    """
     if conversation_id is None:
         conversation_id = str(uuid.uuid4())
-        
-    # 1. Tools
+
+    # Check if this is an agentic model
+    is_agentic = is_agentic_model(req.model)
+
+    # Extract inference parameters
+    max_tokens = getattr(req, 'max_tokens', None)
+    temperature = getattr(req, 'temperature', None)
+    top_p = getattr(req, 'top_p', None)
+
+    # Handle max_tokens = -1 as "use maximum" (Kiro max output is ~32000 tokens)
+    if max_tokens == -1:
+        max_tokens = 32000
+        logger.debug("max_tokens=-1 converted to 32000")
+
+    # 1. Tools - filter out web_search and track if it was present
     aq_tools = []
+    has_web_search = False
     long_desc_tools = []
     if req.tools:
         for t in req.tools:
+            if is_web_search_tool(t.name):
+                has_web_search = True
+                continue  # Filter out web_search
             if t.description and len(t.description) > 10240:
                 long_desc_tools.append({"name": t.name, "full_description": t.description})
-            aq_tools.append(convert_tool(t))
+            converted = convert_tool(t)
+            if converted:  # convert_tool returns None for filtered tools
+                aq_tools.append(converted)
         # Apply dynamic compression if total tools size exceeds threshold
         aq_tools = compress_tools_if_needed(aq_tools)
 
@@ -734,7 +858,9 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
     #
     # {system prompt content}
     #
+    # {agentic prompt} (if -agentic model)
     # {tool_choice hint}
+    # {web_search alternative hint} (if web_search was filtered)
     # --- END SYSTEM PROMPT ---
     #
     # {user content or fallback}
@@ -744,7 +870,7 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
 
     # 1. Thinking hint - only inject if not already present in system prompt
     # CLIProxyAPIPlus: Skip injection if client (e.g., Claude Code) already includes thinking config
-    if is_thinking_enabled(req) and not has_thinking_tag_in_body(req):
+    if is_thinking_enabled(req, headers) and not has_thinking_tag_in_body(req):
         sys_parts.append(THINKING_HINT)
 
     # 2. Timestamp context
@@ -765,16 +891,26 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
         if sys_text:
             sys_parts.append(sys_text)
 
-    # 4. Tool choice hint (if specified)
+    # 4. Agentic mode optimization prompt (for -agentic model variants)
+    if is_agentic:
+        sys_parts.append(KIRO_AGENTIC_SYSTEM_PROMPT)
+        logger.debug("Injected agentic mode optimization prompt")
+
+    # 5. Tool choice hint (if specified)
     tool_choice_hint = extract_tool_choice_hint(req)
     if tool_choice_hint:
         sys_parts.append(tool_choice_hint)
+
+    # 6. Web search alternative hint (if web_search was requested but filtered)
+    if has_web_search:
+        sys_parts.append(WEB_SEARCH_ALTERNATIVE_HINT)
+        logger.info("Injected web_search alternative hint (tool was filtered)")
 
     # Join system prompt parts and wrap in markers
     sys_inner = "\n\n".join(sys_parts)
     formatted_content = f"--- SYSTEM PROMPT ---\n{sys_inner}\n--- END SYSTEM PROMPT ---"
 
-    # 5. Append user content AFTER the system prompt wrapper
+    # 7. Append user content AFTER the system prompt wrapper
     # CRITICAL FIX (CLIProxyAPIPlus): Never send empty content
     if has_tool_result and not prompt_content.strip():
         formatted_content += f"\n\n{DEFAULT_USER_CONTENT_WITH_TOOL_RESULTS}"
@@ -786,10 +922,10 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
 
     logger.debug(f"Final content length: {len(formatted_content)}, has_tool_result: {has_tool_result}, prompt_content_len: {len(prompt_content)}")
 
-    # 6. Model
+    # 8. Model
     model_id = map_model_name(req.model)
 
-    # 7. User Input Message - use normalized origin
+    # 9. User Input Message - use normalized origin
     user_input_msg = {
         "content": formatted_content,
         "userInputMessageContext": user_ctx,
@@ -798,19 +934,37 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
     }
     if images:
         user_input_msg["images"] = images
-        
-    # 7. History
+
+    # 10. History
     history_msgs = req.messages[:-1] if len(req.messages) > 1 else []
-    aq_history = process_history(history_msgs, thinking_enabled=is_thinking_enabled(req))
-    
-    # 8. Final Body
-    return {
+    aq_history = process_history(history_msgs, thinking_enabled=is_thinking_enabled(req, headers))
+
+    # 11. Build inferenceConfig if we have any inference parameters
+    inference_config = None
+    if max_tokens or temperature is not None or top_p is not None:
+        inference_config = {}
+        if max_tokens:
+            inference_config["maxTokens"] = max_tokens
+        if temperature is not None:
+            inference_config["temperature"] = temperature
+        if top_p is not None:
+            inference_config["topP"] = top_p
+
+    # 12. Final Body
+    result = {
         "conversationState": {
+            "chatTriggerType": "MANUAL",  # Must be first field per CLIProxyAPIPlus
             "conversationId": conversation_id,
-            "history": aq_history,
             "currentMessage": {
                 "userInputMessage": user_input_msg
             },
-            "chatTriggerType": "MANUAL"
+            "history": aq_history
         }
     }
+
+    # Add inferenceConfig if present (Kiro API supports this)
+    if inference_config:
+        result["inferenceConfig"] = inference_config
+        logger.debug(f"Added inferenceConfig: {inference_config}")
+
+    return result

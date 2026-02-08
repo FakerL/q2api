@@ -584,13 +584,23 @@ def _sse_format(obj: Dict[str, Any]) -> str:
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
 
 @app.post("/v1/messages")
-async def claude_messages(req: ClaudeRequest, account: Dict[str, Any] = Depends(require_account)):
+async def claude_messages(
+    req: ClaudeRequest,
+    account: Dict[str, Any] = Depends(require_account),
+    authorization: Optional[str] = Header(default=None),
+    anthropic_beta: Optional[str] = Header(default=None, alias="Anthropic-Beta")
+):
     """
     Claude-compatible messages endpoint.
     """
+    # Build headers dict for thinking mode detection
+    request_headers = {}
+    if anthropic_beta:
+        request_headers["Anthropic-Beta"] = anthropic_beta
+
     # 1. Convert request
     try:
-        aq_request = convert_claude_to_amazonq_request(req)
+        aq_request = convert_claude_to_amazonq_request(req, headers=request_headers)
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=400, detail=f"Request conversion failed: {str(e)}")
