@@ -387,9 +387,10 @@ def map_model_name(claude_model: str) -> str:
         "auto",
         "claude-sonnet-4",
         "claude-sonnet-4.5",
+        "claude-sonnet-4.6",
         "claude-haiku-4.5",
         "claude-opus-4.5",
-        "claude-opus-4.6",  # Added per CLIProxyAPIPlus recent update
+        "claude-opus-4.6",
     }
 
     # Mapping from canonical names to AWS model IDs
@@ -397,13 +398,15 @@ def map_model_name(claude_model: str) -> str:
         # Anthropic canonical names
         "claude-sonnet-4-20250514": "claude-sonnet-4",
         "claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
+        "claude-sonnet-4-6-20260217": "claude-sonnet-4.6",
         "claude-haiku-4-5-20251001": "claude-haiku-4.5",
         "claude-opus-4-5-20251101": "claude-opus-4.5",
-        "claude-opus-4-6-20260201": "claude-opus-4.6",  # Claude Opus 4.6 canonical
+        "claude-opus-4-6-20260201": "claude-opus-4.6",
         # Hyphenated variants (kiro format)
         "claude-opus-4-5": "claude-opus-4.5",
         "claude-opus-4-6": "claude-opus-4.6",
         "claude-sonnet-4-5": "claude-sonnet-4.5",
+        "claude-sonnet-4-6": "claude-sonnet-4.6",
         "claude-haiku-4-5": "claude-haiku-4.5",
     }
 
