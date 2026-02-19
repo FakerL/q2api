@@ -269,6 +269,24 @@ def _parse_allowed_keys_env() -> List[str]:
 
 ALLOWED_API_KEYS: List[str] = _parse_allowed_keys_env()
 MAX_ERROR_COUNT: int = int(os.getenv("MAX_ERROR_COUNT", "100"))
+
+# Upstream error patterns that indicate transient capacity issues, NOT account problems.
+# These should not increment error_count or disable accounts.
+_TRANSIENT_ERROR_PATTERNS = ("ThrottlingException", "INSUFFICIENT_MODEL_CAPACITY")
+
+def _is_transient_upstream_error(e: Exception) -> bool:
+    """Check if an upstream error is a transient capacity issue."""
+    msg = str(e)
+    return any(p in msg for p in _TRANSIENT_ERROR_PATTERNS)
+
+def _extract_upstream_status(e: Exception) -> Optional[int]:
+    """Extract HTTP status code from 'Upstream error {code}: ...' messages."""
+    msg = str(e)
+    if msg.startswith("Upstream error "):
+        m = re.match(r"Upstream error (\d+):", msg)
+        if m:
+            return int(m.group(1))
+    return None
 TOKEN_COUNT_MULTIPLIER: float = float(os.getenv("TOKEN_COUNT_MULTIPLIER", "1.0"))
 
 # Device authorization timeout (seconds, configurable via env)
@@ -639,7 +657,11 @@ async def claude_messages(
             # For simplicity, let's force stream=True internally and aggregate if req.stream is False.
             pass
     except Exception as e:
-        await _update_stats(account["id"], False)
+        if not _is_transient_upstream_error(e):
+            await _update_stats(account["id"], False)
+        status = _extract_upstream_status(e)
+        if status:
+            raise HTTPException(status_code=status, detail=str(e))
         raise
 
     # We always use streaming upstream to handle events properly
@@ -811,14 +833,13 @@ async def claude_messages(
                 await event_iter.aclose()
         except Exception:
             pass
-        await _update_stats(account["id"], False)
+        if not _is_transient_upstream_error(e):
+            await _update_stats(account["id"], False)
 
         # Extract upstream status code from "Upstream error {code}: {message}"
-        err_msg = str(e)
-        if err_msg.startswith("Upstream error "):
-            match = re.match(r"Upstream error (\d+):", err_msg)
-            if match:
-                raise HTTPException(status_code=int(match.group(1)), detail=err_msg)
+        status = _extract_upstream_status(e)
+        if status:
+            raise HTTPException(status_code=status, detail=str(e))
         raise
 
 @app.post("/v1/messages/count_tokens")
@@ -899,7 +920,11 @@ async def chat_completions(req: ChatCompletionRequest, account: Dict[str, Any] =
                 completion_tokens=completion_tokens
             ))
         except Exception as e:
-            await _update_stats(account["id"], False)
+            if not _is_transient_upstream_error(e):
+                await _update_stats(account["id"], False)
+            status = _extract_upstream_status(e)
+            if status:
+                raise HTTPException(status_code=status, detail=str(e))
             raise
     else:
         created = int(time.time())
@@ -971,14 +996,13 @@ async def chat_completions(req: ChatCompletionRequest, account: Dict[str, Any] =
                     await it.aclose()
             except Exception:
                 pass
-            await _update_stats(account["id"], False)
+            if not _is_transient_upstream_error(e):
+                await _update_stats(account["id"], False)
 
             # Extract upstream status code from "Upstream error {code}: {message}"
-            err_msg = str(e)
-            if err_msg.startswith("Upstream error "):
-                match = re.match(r"Upstream error (\d+):", err_msg)
-                if match:
-                    raise HTTPException(status_code=int(match.group(1)), detail=err_msg)
+            status = _extract_upstream_status(e)
+            if status:
+                raise HTTPException(status_code=status, detail=str(e))
             raise
 
 # ------------------------------------------------------------------------------
