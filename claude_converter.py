@@ -417,9 +417,9 @@ def map_model_name(claude_model: str) -> str:
     if model_lower in CANONICAL_TO_SHORT:
         return CANONICAL_TO_SHORT[model_lower]
 
-    # Unknown model - log warning and return default
-    logger.warning(f"Unknown model '{claude_model}', falling back to default model '{DEFAULT_MODEL}'")
-    return DEFAULT_MODEL
+    # Unknown model - pass through as-is (upstream supports many models)
+    logger.info(f"Passing through unknown model '{claude_model}' as-is")
+    return model_lower
 
 def extract_text_from_content(content: Union[str, List[Dict[str, Any]]]) -> str:
     """Extract text from Claude content."""
