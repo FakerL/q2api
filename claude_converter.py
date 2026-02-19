@@ -93,16 +93,8 @@ You MUST follow these rules for ALL file operations. Violation causes server tim
 
 REMEMBER: When in doubt, write LESS per operation. Multiple small operations > one large operation."""
 
-# Web search alternative hint - injected when web_search tool is filtered
-WEB_SEARCH_ALTERNATIVE_HINT = """[CRITICAL WEB ACCESS INSTRUCTION]
-You have the Fetch/read_url_content tool available. When the user asks about current events, weather, news, or any information that requires web access:
-- DO NOT say you cannot search the web
-- DO NOT refuse to help with web-related queries
-- IMMEDIATELY use the Fetch tool to access relevant URLs
-- Use well-known official websites, documentation sites, or API endpoints
-- Construct appropriate URLs based on the query context
-
-IMPORTANT: Always attempt to fetch information FIRST before declining. You CAN access the web via Fetch."""
+# Web search tool renaming - Kiro API uses remote_web_search instead of web_search
+REMOTE_WEB_SEARCH_DESCRIPTION = "WebSearch looks up information outside the model's training data. Supports multiple queries to gather comprehensive information."
 
 
 def calculate_tools_size(tools: List[Dict[str, Any]]) -> int:
@@ -412,9 +404,10 @@ def map_model_name(claude_model: str) -> str:
 
     model_lower = claude_model.lower()
 
-    # Strip -agentic suffix for model resolution (agentic is handled separately)
-    if "-agentic" in model_lower:
-        model_lower = model_lower.replace("-agentic", "")
+    # Strip -agentic/-chat suffix for model resolution (handled separately)
+    for suffix in ("-agentic", "-chat"):
+        if suffix in model_lower:
+            model_lower = model_lower.replace(suffix, "")
 
     # Check if it's a valid short name
     if model_lower in VALID_MODELS:
@@ -516,12 +509,6 @@ def shorten_tool_name_if_needed(name: str) -> str:
 
     return name[:limit]
 
-def is_web_search_tool(tool_name: str) -> bool:
-    """Check if a tool is a web search tool (should be filtered)."""
-    name_lower = tool_name.lower()
-    return name_lower in ("web_search", "websearch", "web-search")
-
-
 def is_agentic_model(model: str) -> bool:
     """Check if model is an agentic variant (has -agentic suffix)."""
     if not model:
@@ -529,20 +516,39 @@ def is_agentic_model(model: str) -> bool:
     return "-agentic" in model.lower()
 
 
-def convert_tool(tool: ClaudeTool) -> Optional[Dict[str, Any]]:
-    """Convert Claude tool to Amazon Q tool.
+def is_chat_only_model(model: str) -> bool:
+    """Check if model is a chat-only variant (has -chat suffix).
 
-    Returns None if the tool should be filtered (e.g., web_search).
+    Chat-only mode strips all tools for pure conversation mode.
     """
-    # Filter out web_search tools - Kiro doesn't support them
-    if is_web_search_tool(tool.name):
-        logger.info(f"Filtering out unsupported tool: {tool.name}")
-        return None
+    if not model:
+        return False
+    return "-chat" in model.lower()
 
+
+def ensure_kiro_input_schema(schema: Any) -> Any:
+    """Ensure tool input_schema is never None.
+
+    Kiro API requires a valid input_schema. If None, return a default empty object schema.
+    """
+    if schema is not None:
+        return schema
+    return {"type": "object", "properties": {}}
+
+
+def convert_tool(tool: ClaudeTool) -> Dict[str, Any]:
+    """Convert Claude tool to Amazon Q tool."""
     # Shorten tool name if needed
     name = shorten_tool_name_if_needed(tool.name)
 
     desc = tool.description or ""
+
+    # Rename web_search → remote_web_search for Kiro API compatibility
+    if name == "web_search":
+        name = "remote_web_search"
+        desc = desc or REMOTE_WEB_SEARCH_DESCRIPTION
+        logger.debug("Renamed tool web_search → remote_web_search")
+
     # Ensure non-empty description
     if not desc.strip():
         desc = f"Tool: {name}"
@@ -563,7 +569,7 @@ def convert_tool(tool: ClaudeTool) -> Optional[Dict[str, Any]]:
         "toolSpecification": {
             "name": name,
             "description": desc,
-            "inputSchema": {"json": tool.input_schema}
+            "inputSchema": {"json": ensure_kiro_input_schema(tool.input_schema)}
         }
     }
 
@@ -709,9 +715,13 @@ def process_history(messages: List[ClaudeMessage], thinking_enabled: bool = Fals
                         tid = block.get("id")
                         if tid and tid not in seen_tool_use_ids:
                             seen_tool_use_ids.add(tid)
+                            tool_name = block.get("name")
+                            # Rename web_search → remote_web_search to match convertClaudeToolsToKiro
+                            if tool_name == "web_search":
+                                tool_name = "remote_web_search"
                             tool_uses.append({
                                 "toolUseId": tid,
-                                "name": block.get("name"),
+                                "name": tool_name,
                                 "input": block.get("input", {})
                             })
                 if tool_uses:
@@ -746,12 +756,32 @@ def process_history(messages: List[ClaudeMessage], thinking_enabled: bool = Fals
 
     return history
 
+def deduplicate_tool_results(tool_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Deduplicate tool results by toolUseId.
+
+    If multiple tool results share the same toolUseId, keep only the first one.
+    This prevents duplicate results from being sent to the Kiro API.
+    """
+    if not tool_results:
+        return tool_results
+    seen = set()
+    deduped = []
+    for tr in tool_results:
+        tid = tr.get("toolUseId", "")
+        if tid not in seen:
+            seen.add(tid)
+            deduped.append(tr)
+        else:
+            logger.debug(f"Deduplicated tool result with toolUseId: {tid}")
+    return deduped
+
 def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optional[str] = None, headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Convert ClaudeRequest to Amazon Q request body.
 
     Aligned with CLIProxyAPIPlus implementation. Supports:
-    - Tool calling with web_search filtering
+    - Tool calling with web_search → remote_web_search renaming
     - Agentic mode with chunked write optimization
+    - Chat-only mode (strips tools for -chat model variants)
     - InferenceConfig (max_tokens, temperature, top_p)
     - Thinking mode detection (5 methods)
     - Empty content handling
@@ -759,8 +789,9 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
     if conversation_id is None:
         conversation_id = str(uuid.uuid4())
 
-    # Check if this is an agentic model
+    # Check model variants
     is_agentic = is_agentic_model(req.model)
+    is_chat_only = is_chat_only_model(req.model)
 
     # Extract inference parameters
     max_tokens = getattr(req, 'max_tokens', None)
@@ -772,20 +803,11 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
         max_tokens = 32000
         logger.debug("max_tokens=-1 converted to 32000")
 
-    # 1. Tools - filter out web_search and track if it was present
+    # 1. Tools - chat-only mode strips all tools
     aq_tools = []
-    has_web_search = False
-    long_desc_tools = []
-    if req.tools:
+    if req.tools and not is_chat_only:
         for t in req.tools:
-            if is_web_search_tool(t.name):
-                has_web_search = True
-                continue  # Filter out web_search
-            if t.description and len(t.description) > 10240:
-                long_desc_tools.append({"name": t.name, "full_description": t.description})
-            converted = convert_tool(t)
-            if converted:  # convert_tool returns None for filtered tools
-                aq_tools.append(converted)
+            aq_tools.append(convert_tool(t))
         # Apply dynamic compression if total tools size exceeds threshold
         aq_tools = compress_tools_if_needed(aq_tools)
 
@@ -845,6 +867,9 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
             prompt_content = extract_text_from_content(content)
             
     # 3. Context - CLIProxyAPIPlus doesn't use envState
+    # Deduplicate tool results before building context
+    if tool_results:
+        tool_results = deduplicate_tool_results(tool_results)
     user_ctx = {}
     if aq_tools:
         user_ctx["tools"] = aq_tools
@@ -863,7 +888,6 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
     #
     # {agentic prompt} (if -agentic model)
     # {tool_choice hint}
-    # {web_search alternative hint} (if web_search was filtered)
     # --- END SYSTEM PROMPT ---
     #
     # {user content or fallback}
@@ -904,24 +928,36 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
     if tool_choice_hint:
         sys_parts.append(tool_choice_hint)
 
-    # 6. Web search alternative hint (if web_search was requested but filtered)
-    if has_web_search:
-        sys_parts.append(WEB_SEARCH_ALTERNATIVE_HINT)
-        logger.info("Injected web_search alternative hint (tool was filtered)")
-
     # Join system prompt parts and wrap in markers
     sys_inner = "\n\n".join(sys_parts)
-    formatted_content = f"--- SYSTEM PROMPT ---\n{sys_inner}\n--- END SYSTEM PROMPT ---"
 
-    # 7. Append user content AFTER the system prompt wrapper
+    # 10. History
+    history_msgs = req.messages[:-1] if len(req.messages) > 1 else []
+    aq_history = process_history(history_msgs, thinking_enabled=is_thinking_enabled(req, headers))
+
+    # CLIProxyAPIPlus: Only inject system prompt on first turn to avoid re-injection
+    effective_system_prompt = sys_inner
+    if len(aq_history) > 0:
+        effective_system_prompt = ""
+
+    if effective_system_prompt:
+        formatted_content = f"--- SYSTEM PROMPT ---\n{effective_system_prompt}\n--- END SYSTEM PROMPT ---"
+    else:
+        formatted_content = ""
+
+    # 7. Append user content
     # CRITICAL FIX (CLIProxyAPIPlus): Never send empty content
     if has_tool_result and not prompt_content.strip():
-        formatted_content += f"\n\n{DEFAULT_USER_CONTENT_WITH_TOOL_RESULTS}"
+        user_text = DEFAULT_USER_CONTENT_WITH_TOOL_RESULTS
     elif prompt_content.strip():
-        formatted_content += f"\n\n{prompt_content}"
+        user_text = prompt_content
     else:
-        # Fallback for empty content
-        formatted_content += f"\n\n{DEFAULT_USER_CONTENT}"
+        user_text = DEFAULT_USER_CONTENT
+
+    if formatted_content:
+        formatted_content += f"\n\n{user_text}"
+    else:
+        formatted_content = user_text
 
     logger.debug(f"Final content length: {len(formatted_content)}, has_tool_result: {has_tool_result}, prompt_content_len: {len(prompt_content)}")
 
@@ -937,10 +973,6 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
     }
     if images:
         user_input_msg["images"] = images
-
-    # 10. History
-    history_msgs = req.messages[:-1] if len(req.messages) > 1 else []
-    aq_history = process_history(history_msgs, thinking_enabled=is_thinking_enabled(req, headers))
 
     # 11. Build inferenceConfig if we have any inference parameters
     inference_config = None

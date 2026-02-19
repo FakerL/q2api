@@ -11,16 +11,22 @@
 | Empty content handling | ✅ | `.` for assistant, `Continue` for user |
 | Tool description limit | ✅ | 10237 chars with UTF-8 safe truncation |
 | Tool compression | ✅ | 20KB threshold, 2-step (schema + description) |
-| Web search filtering | ✅ | Filter + Fetch tool hint injection |
+| web_search → remote_web_search | ✅ | Rename tool + fallback description |
 | Agentic mode | ✅ | `-agentic` suffix triggers chunked write prompt |
+| Chat-only mode | ✅ | `-chat` suffix strips all tools |
 | InferenceConfig | ✅ | `maxTokens`, `temperature`, `topP` |
 | Tool choice hint | ✅ | System prompt injection for `any`/`tool` |
 | MCP tool name shortening | ✅ | 64 char limit |
+| System prompt re-injection | ✅ | Skipped when `len(history) > 0` |
+| Tool result deduplication | ✅ | By `toolUseId` on currentMessage |
+| `ensureKiroInputSchema` | ✅ | Defaults to `{"type":"object","properties":{}}` |
+| Model suffix stripping | ✅ | `-agentic`, `-chat` stripped for model resolution |
 
 ### Models Supported
 ```
-claude-sonnet-4, claude-sonnet-4.5, claude-sonnet-4.6, claude-haiku-4.5, claude-opus-4.5, claude-opus-4.6
+auto, claude-sonnet-4, claude-sonnet-4.5, claude-sonnet-4.6, claude-haiku-4.5, claude-opus-4.5, claude-opus-4.6
 + Agentic variants: claude-opus-4.5-agentic, etc.
++ Chat-only variants: claude-opus-4.5-chat, etc.
 ```
 
 ## ❌ Not Implemented (CLIProxyAPIPlus only)
@@ -32,7 +38,7 @@ claude-sonnet-4, claude-sonnet-4.5, claude-sonnet-4.6, claude-haiku-4.5, claude-
 | Truncation detection | Response-side feature (4 types + soft failure) |
 | Retry with exponential backoff | Executor-level, uses simple retry in replicate.py |
 | Real-time usage updates | Executor streaming feature |
-| Message merging (adjacent same-role) | Partially implemented in `process_history` |
+| Dynamic web_search description cache | Fetched from MCP tools/list at runtime; we use static fallback |
 
 ## System Prompt Structure
 
@@ -43,7 +49,8 @@ Order (matches CLIProxyAPIPlus):
 4. Original system prompt
 5. Agentic chunked write prompt (if `-agentic` model)
 6. Tool choice hint (if specified)
-7. Web search alternative hint (if web_search filtered)
+
+Note: System prompt is only injected on first turn (`len(history) == 0`).
 
 ## Request Payload Structure
 
@@ -76,15 +83,5 @@ DEFAULT_USER_CONTENT = "Continue"
 TOOL_COMPRESSION_TARGET_SIZE = 20 * 1024  # 20KB
 MIN_TOOL_DESCRIPTION_LENGTH = 50
 KIRO_MAX_TOOL_DESC_LEN = 10237
+REMOTE_WEB_SEARCH_DESCRIPTION = "WebSearch looks up information..."
 ```
-
-## Changelog
-
-### 2026-02-08
-- Added agentic mode (`-agentic` model variants with chunked write prompt)
-- Added InferenceConfig support (`maxTokens`, `temperature`, `topP`)
-- Added web_search tool filtering with Fetch alternative hint
-- Added Claude Opus 4.6 model support
-- Fixed Anthropic-Beta header passthrough for thinking detection
-- Aligned `chatTriggerType` field position (first in conversationState)
-- Updated all empty content placeholders to minimal strings

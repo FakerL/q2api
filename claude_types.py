@@ -8,7 +8,7 @@ class ClaudeMessage(BaseModel):
 class ClaudeTool(BaseModel):
     name: str
     description: Optional[str] = ""
-    input_schema: Dict[str, Any]
+    input_schema: Optional[Dict[str, Any]] = None
 
 class ClaudeRequest(BaseModel):
     model: str
