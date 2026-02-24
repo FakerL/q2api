@@ -354,14 +354,20 @@ def has_thinking_tag_in_body(req) -> bool:
 def normalize_origin(origin: str) -> str:
     """Normalize origin value for Kiro API compatibility.
 
-    Maps various origin values to the canonical forms that Kiro API expects.
-    This matches the behavior in CLIProxyAPIPlus.
+    CLIProxyAPIPlus normalizes KIRO_CLI->CLI in the converter, but then overrides
+    the origin to "AI_EDITOR" at the endpoint config level (kiro_executor.go:375).
+    Since q2api doesn't have that second layer, we map directly to the final value
+    that CLIProxyAPIPlus actually sends: "AI_EDITOR".
+
+    The "CLI" origin hits a separate (often exhausted) monthly quota pool and should
+    be avoided.
     """
     origin_map = {
-        "KIRO_CLI": "CLI",
+        "KIRO_CLI": "AI_EDITOR",
         "KIRO_AI_EDITOR": "AI_EDITOR",
-        "AMAZON_Q": "CLI",
+        "AMAZON_Q": "AI_EDITOR",
         "KIRO_IDE": "AI_EDITOR",
+        "CLI": "AI_EDITOR",
     }
     return origin_map.get(origin, origin)
 
@@ -589,7 +595,7 @@ def merge_user_messages(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
         if base_context is None:
             base_context = msg.get("userInputMessageContext", {})
         if base_origin is None:
-            base_origin = msg.get("origin", "CLI")  # Use normalized origin
+            base_origin = normalize_origin(msg.get("origin", "KIRO_CLI"))
         if base_model is None:
             base_model = msg.get("modelId")
 
@@ -604,7 +610,7 @@ def merge_user_messages(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
     result = {
         "content": "\n\n".join(all_contents),
         "userInputMessageContext": base_context or {},
-        "origin": base_origin or "CLI",  # Use normalized origin
+        "origin": base_origin or normalize_origin("KIRO_CLI"),
         "modelId": base_model
     }
 
@@ -680,7 +686,7 @@ def process_history(messages: List[ClaudeMessage], thinking_enabled: bool = Fals
             u_msg = {
                 "content": text_content,
                 "userInputMessageContext": user_ctx,
-                "origin": "CLI"  # Use normalized origin
+                "origin": normalize_origin("KIRO_CLI")
             }
 
             # CRITICAL FIX (CLIProxyAPIPlus): Ensure non-empty content for ALL user messages
@@ -935,13 +941,10 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
     history_msgs = req.messages[:-1] if len(req.messages) > 1 else []
     aq_history = process_history(history_msgs, thinking_enabled=is_thinking_enabled(req, headers))
 
-    # CLIProxyAPIPlus: Only inject system prompt on first turn to avoid re-injection
-    effective_system_prompt = sys_inner
-    if len(aq_history) > 0:
-        effective_system_prompt = ""
-
-    if effective_system_prompt:
-        formatted_content = f"--- SYSTEM PROMPT ---\n{effective_system_prompt}\n--- END SYSTEM PROMPT ---"
+    # CLIProxyAPIPlus: Always inject system prompt into currentMessage content
+    # (CLIProxyAPIPlus's buildFinalContent always prepends system prompt regardless of history)
+    if sys_inner:
+        formatted_content = f"--- SYSTEM PROMPT ---\n{sys_inner}\n--- END SYSTEM PROMPT ---"
     else:
         formatted_content = ""
 
@@ -968,7 +971,7 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
     user_input_msg = {
         "content": formatted_content,
         "userInputMessageContext": user_ctx,
-        "origin": normalize_origin("KIRO_CLI"),  # Normalize origin: KIRO_CLI -> CLI
+        "origin": normalize_origin("KIRO_CLI"),
         "modelId": model_id
     }
     if images:

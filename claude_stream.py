@@ -361,6 +361,14 @@ class ClaudeStreamHandler:
 
         # 2. Content Block Delta (assistantResponseEvent)
         elif event_type == "assistantResponseEvent":
+            # Q endpoint doesn't send initial-response, so auto-send message_start
+            if not self.message_start_sent:
+                conv_id = self.conversation_id or str(uuid.uuid4())
+                self.conversation_id = conv_id
+                yield build_message_start(conv_id, self.model, self.input_tokens)
+                self.message_start_sent = True
+                yield build_ping()
+
             content = payload.get("content", "")
 
             # Close any open tool use block
@@ -513,6 +521,14 @@ class ClaudeStreamHandler:
 
         # 3. Tool Use (toolUseEvent)
         elif event_type == "toolUseEvent":
+            # Q endpoint doesn't send initial-response, so auto-send message_start
+            if not self.message_start_sent:
+                conv_id = self.conversation_id or str(uuid.uuid4())
+                self.conversation_id = conv_id
+                yield build_message_start(conv_id, self.model, self.input_tokens)
+                self.message_start_sent = True
+                yield build_ping()
+
             tool_use_id = payload.get("toolUseId")
             tool_name = payload.get("name")
             tool_input = payload.get("input", {})
@@ -591,6 +607,14 @@ class ClaudeStreamHandler:
         # Skip if response already ended (message_stop already sent)
         if self.response_ended:
             return
+
+        # Ensure message_start was sent (Q endpoint may skip initial-response)
+        if not self.message_start_sent:
+            conv_id = self.conversation_id or str(uuid.uuid4())
+            self.conversation_id = conv_id
+            yield build_message_start(conv_id, self.model, self.input_tokens)
+            self.message_start_sent = True
+            yield build_ping()
 
         # Flush any remaining think_buffer content
         if self.think_buffer:

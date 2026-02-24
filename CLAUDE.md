@@ -5,7 +5,7 @@
 ### Request Translation
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Origin normalization | ✅ | `KIRO_CLI`→`CLI`, `KIRO_AI_EDITOR`→`AI_EDITOR`, etc. |
+| Origin normalization | ✅ | All origins → `AI_EDITOR` (matches CLIProxyAPIPlus endpoint config `kiro_executor.go:375`) |
 | Thinking mode (5 methods) | ✅ | Header, Claude API, OpenAI, AMP/Cursor, model name |
 | Thinking injection | ✅ | `<thinking_mode>enabled</thinking_mode>`, 16000 tokens |
 | Empty content handling | ✅ | `.` for assistant, `Continue` for user |
@@ -17,7 +17,7 @@
 | InferenceConfig | ✅ | `maxTokens`, `temperature`, `topP` |
 | Tool choice hint | ✅ | System prompt injection for `any`/`tool` |
 | MCP tool name shortening | ✅ | 64 char limit |
-| System prompt re-injection | ✅ | Skipped when `len(history) > 0` |
+| System prompt injection | ✅ | Always injected into currentMessage content (matches `buildFinalContent` in CLIProxyAPIPlus) |
 | Tool result deduplication | ✅ | By `toolUseId` on currentMessage |
 | `ensureKiroInputSchema` | ✅ | Defaults to `{"type":"object","properties":{}}` |
 | Model suffix stripping | ✅ | `-agentic`, `-chat` stripped for model resolution |
@@ -50,7 +50,7 @@ Order (matches CLIProxyAPIPlus):
 5. Agentic chunked write prompt (if `-agentic` model)
 6. Tool choice hint (if specified)
 
-Note: System prompt is only injected on first turn (`len(history) == 0`).
+Note: System prompt is always injected into `currentMessage.content` on every turn (matches CLIProxyAPIPlus `buildFinalContent`).
 
 ## Request Payload Structure
 
@@ -63,7 +63,7 @@ Note: System prompt is only injected on first turn (`len(history) == 0`).
       "userInputMessage": {
         "content": "--- SYSTEM PROMPT ---\n...\n--- END SYSTEM PROMPT ---\n\n{user_content}",
         "modelId": "claude-opus-4.5",
-        "origin": "CLI",
+        "origin": "AI_EDITOR",
         "userInputMessageContext": { "tools": [...], "toolResults": [...] }
       }
     },

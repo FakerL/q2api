@@ -623,59 +623,7 @@ async def claude_messages(
         traceback.print_exc()
         raise HTTPException(status_code=400, detail=f"Request conversion failed: {str(e)}")
 
-    # 2. Send upstream
-    async def _send_upstream_raw() -> Tuple[Optional[str], Optional[AsyncGenerator[str, None]], Any, Optional[AsyncGenerator[Any, None]]]:
-        access = account.get("accessToken")
-        if not access:
-            refreshed = await refresh_access_token_in_db(account["id"])
-            access = refreshed.get("accessToken")
-            if not access:
-                raise HTTPException(status_code=502, detail="Access token unavailable after refresh")
-        
-        # We use the modified send_chat_request which accepts raw_payload
-        # and returns (text, text_stream, tracker, event_stream)
-        return await send_chat_request(
-            access_token=access,
-            messages=[], # Not used when raw_payload is present
-            model=req.model,
-            stream=req.stream,
-            client=GLOBAL_CLIENT,
-            raw_payload=aq_request
-        )
-
-    try:
-        _, _, tracker, event_stream = await _send_upstream_raw()
-        
-        if not req.stream:
-            # Non-streaming: we need to consume the stream and build response
-            # But wait, send_chat_request with stream=False returns text, but we need structured response
-            # Actually, for Claude format, we might want to parse the events even for non-streaming
-            # to get tool calls etc correctly.
-            # However, our modified send_chat_request returns event_stream if raw_payload is used AND stream=True?
-            # Let's check replicate.py modification.
-            # If stream=False, it returns text. But text might not be enough for tool calls.
-            # For simplicity, let's force stream=True internally and aggregate if req.stream is False.
-            pass
-    except Exception as e:
-        if not _is_transient_upstream_error(e):
-            await _update_stats(account["id"], False)
-        status = _extract_upstream_status(e)
-        if status:
-            raise HTTPException(status_code=status, detail=str(e))
-        raise
-
-    # We always use streaming upstream to handle events properly
-    try:
-        # Force stream=True for upstream to get events
-        # But wait, send_chat_request logic: if stream=True, returns event_stream
-        # We need to call it with stream=True
-        pass
-    except:
-        pass
-        
-    # Re-implementing logic to be cleaner
-    
-    # Always stream from upstream to get full event details
+    # 2. Send upstream (always stream to get full event details)
     event_iter = None
     first_event_received = False
     try:
@@ -683,6 +631,8 @@ async def claude_messages(
         if not access:
             refreshed = await refresh_access_token_in_db(account["id"])
             access = refreshed.get("accessToken")
+            if not access:
+                raise HTTPException(status_code=502, detail="Access token unavailable after refresh")
         
         # We call with stream=True to get the event iterator
         _, _, tracker, event_iter = await send_chat_request(
