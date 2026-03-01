@@ -588,6 +588,14 @@ class ClaudeStreamHandler:
 
         # 4. Assistant Response End (assistantResponseEnd)
         elif event_type == "assistantResponseEnd":
+            # Ensure message_start was sent (empty/filtered completions)
+            if not self.message_start_sent:
+                conv_id = self.conversation_id or str(uuid.uuid4())
+                self.conversation_id = conv_id
+                yield build_message_start(conv_id, self.model, self.input_tokens)
+                self.message_start_sent = True
+                yield build_ping()
+
             # Close any open block
             if self.content_block_started and not self.content_block_stop_sent:
                 yield build_content_block_stop(self.content_block_index)
