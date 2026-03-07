@@ -1006,3 +1006,398 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
         logger.debug(f"Added inferenceConfig: {inference_config}")
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# OpenAI chat/completions → Kiro payload
+# ---------------------------------------------------------------------------
+
+KIRO_MAX_TOOL_DESC_LEN = 10237
+
+def convert_openai_tool(tool_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert an OpenAI-format tool dict to Kiro toolSpecification via convert_tool internals."""
+    func = tool_dict.get("function", tool_dict)
+    name = shorten_tool_name_if_needed(func.get("name", "unknown"))
+    desc = func.get("description", "") or ""
+
+    if name == "web_search":
+        name = "remote_web_search"
+        desc = desc or REMOTE_WEB_SEARCH_DESCRIPTION
+
+    if not desc.strip():
+        desc = f"Tool: {name}"
+
+    if len(desc) > KIRO_MAX_TOOL_DESC_LEN:
+        trunc_len = KIRO_MAX_TOOL_DESC_LEN - 30
+        while trunc_len > 0 and not desc[trunc_len:trunc_len+1].encode('utf-8', errors='ignore'):
+            trunc_len -= 1
+        desc = desc[:trunc_len] + "... (description truncated)"
+
+    schema = ensure_kiro_input_schema(func.get("parameters"))
+    return {
+        "toolSpecification": {
+            "name": name,
+            "description": desc,
+            "inputSchema": {"json": schema}
+        }
+    }
+
+
+def _extract_openai_tool_choice_hint(tool_choice: Any, tools: Optional[List]) -> str:
+    """Extract tool_choice hint from OpenAI format."""
+    if not tool_choice:
+        return ""
+    if isinstance(tool_choice, str):
+        if tool_choice == "required":
+            return "[INSTRUCTION: You MUST use at least one of the available tools to respond. Do not respond with text only - always make a tool call.]"
+        if tool_choice == "none":
+            return ""
+    if isinstance(tool_choice, dict):
+        tc_type = tool_choice.get("type", "")
+        if tc_type == "function":
+            fn = tool_choice.get("function", {})
+            tname = shorten_tool_name_if_needed(fn.get("name", ""))
+            if tname == "web_search":
+                tname = "remote_web_search"
+            if tname:
+                return f"[INSTRUCTION: You MUST use the tool named '{tname}' to respond. Do not use any other tool or respond with text only.]"
+    return ""
+
+
+def _build_response_format_hint(response_format: Optional[Dict[str, Any]]) -> str:
+    """Build system prompt hint for response_format."""
+    if not response_format:
+        return ""
+    fmt_type = response_format.get("type", "")
+    if fmt_type == "json_object":
+        return "You must respond with valid JSON only. Do not include any text outside the JSON object."
+    if fmt_type == "json_schema":
+        schema = response_format.get("json_schema", {}).get("schema", {})
+        schema_str = json.dumps(schema, ensure_ascii=False)
+        if len(schema_str) > 500:
+            # Match CLIProxyAPIPlus: truncate at 500 chars and append "..."
+            schema_str = schema_str[:500] + "..."
+        return f"You must respond with valid JSON only matching this schema:\n{schema_str}\nDo not include any text outside the JSON object."
+    return ""
+
+
+class _OpenAIReqAdapter:
+    """Minimal adapter so is_thinking_enabled / has_thinking_tag_in_body work with OpenAI fields."""
+    def __init__(self, model, system_text, reasoning_effort):
+        self.model = model or ""
+        self.system = system_text or ""
+        self.thinking = None
+        self.reasoning_effort = reasoning_effort
+
+
+def convert_openai_to_amazonq_request(
+    req,
+    headers: Optional[Dict[str, str]] = None,
+    conversation_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Convert OpenAI chat/completions request → Kiro payload."""
+    if conversation_id is None:
+        conversation_id = str(uuid.uuid4())
+
+    model_raw = req.model or "auto"
+    is_agentic = is_agentic_model(model_raw)
+    is_chat = is_chat_only_model(model_raw)
+    model_id = map_model_name(model_raw)
+
+    mct = getattr(req, 'max_completion_tokens', None)
+    mt = getattr(req, 'max_tokens', None)
+    max_tokens = mct if mct is not None else mt
+    if max_tokens == -1:
+        max_tokens = 32000
+    temperature = getattr(req, 'temperature', None)
+    top_p = getattr(req, 'top_p', None)
+
+    # Extract system prompt from messages
+    system_text = ""
+    non_system_msgs = []
+    for m in req.messages:
+        if m.role == "system":
+            c = m.content
+            if isinstance(c, str):
+                system_text += ("\n" + c if system_text else c)
+            elif isinstance(c, list):
+                for b in c:
+                    if isinstance(b, dict) and b.get("type") == "text":
+                        system_text += ("\n" + b["text"] if system_text else b["text"])
+        else:
+            non_system_msgs.append(m)
+
+    adapter = _OpenAIReqAdapter(model_raw, system_text, getattr(req, 'reasoning_effort', None))
+    thinking = is_thinking_enabled(adapter, headers)
+    has_tag = has_thinking_tag_in_body(adapter)
+
+    aq_tools = []
+    tool_choice_val = getattr(req, 'tool_choice', None)
+    strip_tools = is_chat or (isinstance(tool_choice_val, str) and tool_choice_val == "none")
+    if req.tools and not strip_tools:
+        for t in req.tools:
+            aq_tools.append(convert_openai_tool(t))
+        aq_tools = compress_tools_if_needed(aq_tools)
+
+    # System prompt construction (same order as CLIProxyAPIPlus)
+    sys_parts = []
+    if thinking and not has_tag:
+        sys_parts.append(THINKING_HINT)
+    timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+    sys_parts.append(f"[Context: Current time is {timestamp}]")
+    if system_text:
+        sys_parts.append(system_text)
+    if is_agentic:
+        sys_parts.append(KIRO_AGENTIC_SYSTEM_PROMPT)
+    if not strip_tools:
+        tc_hint = _extract_openai_tool_choice_hint(getattr(req, 'tool_choice', None), req.tools)
+        if tc_hint:
+            sys_parts.append(tc_hint)
+    rf_hint = _build_response_format_hint(getattr(req, 'response_format', None))
+    if rf_hint:
+        sys_parts.append(rf_hint)
+    sys_inner = "\n\n".join(sys_parts)
+
+    # Message processing
+    merged = _merge_adjacent_openai_messages(non_system_msgs)
+    history, current_content, current_tool_results, current_images = _convert_openai_messages_to_kiro(
+        merged, model_id
+    )
+
+    has_tool_result = bool(current_tool_results)
+    if has_tool_result and not current_content.strip():
+        user_text = DEFAULT_USER_CONTENT_WITH_TOOL_RESULTS
+    elif current_content.strip():
+        user_text = current_content
+    else:
+        user_text = DEFAULT_USER_CONTENT
+
+    if sys_inner:
+        formatted_content = f"--- SYSTEM PROMPT ---\n{sys_inner}\n--- END SYSTEM PROMPT ---\n\n{user_text}"
+    else:
+        formatted_content = user_text
+
+    user_ctx = {}
+    if aq_tools:
+        user_ctx["tools"] = aq_tools
+    if current_tool_results:
+        user_ctx["toolResults"] = deduplicate_tool_results(current_tool_results)
+
+    user_input_msg = {
+        "content": formatted_content,
+        "userInputMessageContext": user_ctx,
+        "origin": normalize_origin("KIRO_CLI"),
+        "modelId": model_id,
+    }
+    if current_images:
+        user_input_msg["images"] = current_images
+
+    result = {
+        "conversationState": {
+            "chatTriggerType": "MANUAL",
+            "conversationId": conversation_id,
+            "currentMessage": {"userInputMessage": user_input_msg},
+            "history": history,
+        }
+    }
+
+    inference_config = {}
+    if max_tokens:
+        inference_config["maxTokens"] = max_tokens
+    if temperature is not None:
+        inference_config["temperature"] = temperature
+    if top_p is not None:
+        inference_config["topP"] = top_p
+    if inference_config:
+        result["inferenceConfig"] = inference_config
+
+    return result
+
+
+def _extract_openai_text(content) -> str:
+    """Extract text from OpenAI content (string or list of content parts)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict):
+                if block.get("type") == "text":
+                    parts.append(block.get("text", ""))
+                elif "text" in block and block.get("type") not in ("image_url", "image"):
+                    parts.append(block["text"])
+        return "\n".join(parts)
+    return ""
+
+
+def _merge_adjacent_openai_messages(msgs) -> list:
+    """Merge consecutive user or assistant messages. Tool messages stay separate."""
+    if not msgs:
+        return []
+    merged = [msgs[0]]
+    for m in msgs[1:]:
+        prev = merged[-1]
+        if m.role == prev.role and m.role in ("user", "assistant"):
+            prev_content = _extract_openai_text(prev.content)
+            cur_content = _extract_openai_text(m.content)
+            if m.role == "assistant":
+                prev_tc = getattr(prev, 'tool_calls', None) or []
+                cur_tc = getattr(m, 'tool_calls', None) or []
+                combined_tc = list(prev_tc) + list(cur_tc) if (prev_tc or cur_tc) else None
+                class _M: pass
+                n = _M()
+                n.role = "assistant"
+                n.content = (prev_content + "\n" + cur_content).strip() if (prev_content or cur_content) else ""
+                n.tool_calls = combined_tc
+                n.tool_call_id = None
+                n.name = None
+                merged[-1] = n
+            else:
+                # Collect raw contents for image extraction
+                prev_raws = getattr(prev, '_raw_contents', [prev.content])
+                class _M: pass
+                n = _M()
+                n.role = "user"
+                n.content = (prev_content + "\n" + cur_content).strip() if (prev_content or cur_content) else ""
+                n._raw_contents = list(prev_raws) + [m.content]
+                n.tool_calls = None
+                n.tool_call_id = None
+                n.name = None
+                merged[-1] = n
+        else:
+            merged.append(m)
+    return merged
+
+
+def _convert_openai_messages_to_kiro(msgs, model_id: str):
+    """Convert merged OpenAI messages to Kiro history + current turn.
+
+    Returns (history, current_content, current_tool_results, current_images).
+    """
+    if not msgs:
+        return [], DEFAULT_USER_CONTENT, None, None
+
+    raw_entries = []
+    pending_tool_results = []
+
+    for m in msgs:
+        role = m.role
+
+        if role == "user":
+            content = _extract_openai_text(m.content)
+            # Extract images from all raw contents (handles merged adjacent user messages)
+            images = None
+            raw_contents = getattr(m, '_raw_contents', [m.content])
+            for rc in raw_contents:
+                if not isinstance(rc, str):
+                    rc_images = extract_images_from_content(rc)
+                    if rc_images:
+                        images = (images or []) + rc_images
+            tr = list(pending_tool_results)
+            pending_tool_results.clear()
+            u_ctx = {}
+            if tr:
+                u_ctx["toolResults"] = deduplicate_tool_results(tr)
+            u_msg = {
+                "content": content or (DEFAULT_USER_CONTENT_WITH_TOOL_RESULTS if tr else DEFAULT_USER_CONTENT),
+                "userInputMessageContext": u_ctx,
+                "origin": normalize_origin("KIRO_CLI"),
+            }
+            if images:
+                u_msg["images"] = images
+            raw_entries.append({"userInputMessage": u_msg})
+
+        elif role == "assistant":
+            # Flush pending tool results into a synthetic user turn before this assistant
+            if pending_tool_results:
+                raw_entries.append({
+                    "userInputMessage": {
+                        "content": DEFAULT_USER_CONTENT_WITH_TOOL_RESULTS,
+                        "userInputMessageContext": {"toolResults": deduplicate_tool_results(pending_tool_results)},
+                        "origin": normalize_origin("KIRO_CLI"),
+                    }
+                })
+                pending_tool_results = []
+
+            text = _extract_openai_text(m.content)
+            tool_calls = getattr(m, 'tool_calls', None)
+            tool_uses = []
+            if tool_calls:
+                for tc in tool_calls:
+                    if isinstance(tc, dict):
+                        fn = tc.get("function", {})
+                        tid = tc.get("id", str(uuid.uuid4()))
+                        tname = shorten_tool_name_if_needed(fn.get("name", "unknown"))
+                        if tname == "web_search":
+                            tname = "remote_web_search"
+                        raw_args = fn.get("arguments", "{}")
+                        try:
+                            tinput = json.loads(raw_args)
+                        except (json.JSONDecodeError, TypeError) as exc:
+                            raise ValueError(
+                                f"Malformed tool_call arguments for tool '{tname}' "
+                                f"(id={tid}): {exc}"
+                            )
+                        tool_uses.append({"toolUseId": tid, "name": tname, "input": tinput})
+
+            entry = {"assistantResponseMessage": {"content": text or DEFAULT_ASSISTANT_CONTENT}}
+            if tool_uses:
+                entry["assistantResponseMessage"]["toolUses"] = tool_uses
+                if not text.strip():
+                    entry["assistantResponseMessage"]["content"] = DEFAULT_ASSISTANT_CONTENT_WITH_TOOLS
+            raw_entries.append(entry)
+
+        elif role == "tool":
+            tool_call_id = getattr(m, 'tool_call_id', None) or ""
+            raw_c = _extract_openai_text(m.content)
+            aq_content = [{"text": raw_c}] if raw_c else [{"text": "Tool use was cancelled by the user"}]
+            pending_tool_results.append({
+                "toolUseId": tool_call_id,
+                "content": aq_content,
+                "status": "success",
+            })
+
+    # Synthesize user turn if conversation ends with pending tool results
+    if pending_tool_results:
+        raw_entries.append({
+            "userInputMessage": {
+                "content": DEFAULT_USER_CONTENT_WITH_TOOL_RESULTS,
+                "userInputMessageContext": {"toolResults": deduplicate_tool_results(pending_tool_results)},
+                "origin": normalize_origin("KIRO_CLI"),
+            }
+        })
+        pending_tool_results = []
+
+    # Synthesize user turn if conversation ends with assistant
+    if raw_entries and "assistantResponseMessage" in raw_entries[-1]:
+        raw_entries.append({
+            "userInputMessage": {
+                "content": DEFAULT_USER_CONTENT,
+                "userInputMessageContext": {},
+                "origin": normalize_origin("KIRO_CLI"),
+            }
+        })
+
+    # Split: everything except last userInputMessage → history, last → current
+    last_user_idx = None
+    for i in range(len(raw_entries) - 1, -1, -1):
+        if "userInputMessage" in raw_entries[i]:
+            last_user_idx = i
+            break
+
+    if last_user_idx is not None:
+        history = raw_entries[:last_user_idx]
+        current_entry = raw_entries[last_user_idx]["userInputMessage"]
+    else:
+        history = raw_entries
+        current_entry = {
+            "content": DEFAULT_USER_CONTENT,
+            "userInputMessageContext": {},
+            "origin": normalize_origin("KIRO_CLI"),
+        }
+
+    current_content = current_entry.get("content", "")
+    current_tool_results = current_entry.get("userInputMessageContext", {}).get("toolResults")
+    current_images = current_entry.get("images")
+
+    return history, current_content, current_tool_results, current_images

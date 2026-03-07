@@ -608,7 +608,8 @@ class ClaudeStreamHandler:
             full_text = "".join(self.response_buffer)
             full_tool_input = "".join(self.all_tool_inputs)
             output_tokens = count_tokens(full_text) + count_tokens(full_tool_input)
-            yield build_message_stop(self.input_tokens, output_tokens, "end_turn")
+            stop_reason = "tool_use" if self._processed_tool_use_ids else "end_turn"
+            yield build_message_stop(self.input_tokens, output_tokens, stop_reason)
 
     async def finish(self) -> AsyncGenerator[str, None]:
         """Send final events."""
@@ -656,4 +657,182 @@ class ClaudeStreamHandler:
         full_tool_input = "".join(self.all_tool_inputs)
         output_tokens = count_tokens(full_text) + count_tokens(full_tool_input)
 
-        yield build_message_stop(self.input_tokens, output_tokens, "end_turn")
+        stop_reason = "tool_use" if self._processed_tool_use_ids else "end_turn"
+        yield build_message_stop(self.input_tokens, output_tokens, stop_reason)
+
+
+# ---------------------------------------------------------------------------
+# Claude SSE → OpenAI SSE adapter
+# ---------------------------------------------------------------------------
+
+_STOP_REASON_MAP = {
+    "end_turn": "stop",
+    "tool_use": "tool_calls",
+    "max_tokens": "length",
+    "stop_sequence": "stop",
+}
+
+_SSE_EVENT_RE = re.compile(r'event:\s*(\S+)\ndata:\s*(.*?)(?=\nevent:|\Z)', re.DOTALL)
+
+
+def _parse_sse_frames(raw: str):
+    """Yield (event_type, data_dict) from a raw SSE string that may contain multiple frames."""
+    for m in _SSE_EVENT_RE.finditer(raw):
+        event_type = m.group(1).strip()
+        data_str = m.group(2).strip()
+        if not data_str:
+            continue
+        try:
+            yield event_type, json.loads(data_str)
+        except json.JSONDecodeError:
+            continue
+
+
+async def claude_sse_to_openai_sse(
+    claude_sse_iter,
+    model: str,
+    stream_id: str,
+    created: int,
+):
+    """Async generator: consume Claude SSE strings, yield OpenAI SSE strings."""
+    tool_call_index = -1
+    finish_reason = None
+    input_tokens = 0
+    output_tokens = 0
+
+    def _chunk(choices_delta, fr=None, usage=None):
+        obj = {
+            "id": stream_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [{"index": 0, "delta": choices_delta, "finish_reason": fr}],
+        }
+        if usage:
+            obj["usage"] = usage
+        return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
+
+    async for raw_sse in claude_sse_iter:
+        if not raw_sse:
+            continue
+        for event_type, data in _parse_sse_frames(raw_sse):
+
+            if event_type == "message_start":
+                msg = data.get("message", {})
+                usage = msg.get("usage", {})
+                input_tokens = usage.get("input_tokens", 0)
+                yield _chunk({"role": "assistant"})
+
+            elif event_type == "content_block_start":
+                cb = data.get("content_block", {})
+                if cb.get("type") == "tool_use":
+                    tool_call_index += 1
+                    yield _chunk({"tool_calls": [{
+                        "index": tool_call_index,
+                        "id": cb.get("id", ""),
+                        "type": "function",
+                        "function": {"name": cb.get("name", ""), "arguments": ""},
+                    }]})
+
+            elif event_type == "content_block_delta":
+                delta = data.get("delta", {})
+                delta_type = delta.get("type", "")
+                if delta_type == "text_delta":
+                    text = delta.get("text", "")
+                    if text:
+                        yield _chunk({"content": text})
+                elif delta_type == "thinking_delta":
+                    thinking = delta.get("thinking", "")
+                    if thinking:
+                        yield _chunk({"reasoning_content": thinking})
+                elif delta_type == "input_json_delta":
+                    partial = delta.get("partial_json", "")
+                    if partial:
+                        yield _chunk({"tool_calls": [{
+                            "index": tool_call_index,
+                            "function": {"arguments": partial},
+                        }]})
+
+            elif event_type == "content_block_stop":
+                pass
+
+            elif event_type == "message_delta":
+                delta = data.get("delta", {})
+                stop_reason = delta.get("stop_reason", "")
+                finish_reason = _STOP_REASON_MAP.get(stop_reason, "stop")
+                output_tokens = data.get("usage", {}).get("output_tokens", output_tokens)
+
+            elif event_type == "message_stop":
+                usage = {
+                    "prompt_tokens": input_tokens,
+                    "completion_tokens": output_tokens,
+                    "total_tokens": input_tokens + output_tokens,
+                }
+                yield _chunk({}, fr=finish_reason or "stop", usage=usage)
+                yield "data: [DONE]\n\n"
+
+
+async def collect_openai_response(claude_sse_iter, model: str, stream_id: str, created: int) -> dict:
+    """Accumulate all Claude SSE into a single OpenAI non-streaming response."""
+    content_parts = []
+    reasoning_parts = []
+    tool_calls = []
+    finish_reason = "stop"
+    input_tokens = 0
+    output_tokens = 0
+    current_tc = None
+
+    async for raw_sse in claude_sse_iter:
+        if not raw_sse:
+            continue
+        for event_type, data in _parse_sse_frames(raw_sse):
+            if event_type == "message_start":
+                usage = data.get("message", {}).get("usage", {})
+                input_tokens = usage.get("input_tokens", 0)
+
+            elif event_type == "content_block_start":
+                cb = data.get("content_block", {})
+                if cb.get("type") == "tool_use":
+                    current_tc = {
+                        "id": cb.get("id", ""),
+                        "type": "function",
+                        "function": {"name": cb.get("name", ""), "arguments": ""},
+                    }
+                    tool_calls.append(current_tc)
+
+            elif event_type == "content_block_delta":
+                delta = data.get("delta", {})
+                dt = delta.get("type", "")
+                if dt == "text_delta":
+                    content_parts.append(delta.get("text", ""))
+                elif dt == "thinking_delta":
+                    reasoning_parts.append(delta.get("thinking", ""))
+                elif dt == "input_json_delta" and current_tc:
+                    current_tc["function"]["arguments"] += delta.get("partial_json", "")
+
+            elif event_type == "content_block_stop":
+                current_tc = None
+
+            elif event_type == "message_delta":
+                sr = data.get("delta", {}).get("stop_reason", "")
+                finish_reason = _STOP_REASON_MAP.get(sr, "stop")
+                output_tokens = data.get("usage", {}).get("output_tokens", output_tokens)
+
+    message = {"role": "assistant", "content": "".join(content_parts) or None}
+    if reasoning_parts:
+        message["reasoning_content"] = "".join(reasoning_parts)
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+
+    return {
+        "id": stream_id,
+        "object": "chat.completion",
+        "created": created,
+        "model": model,
+        "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
+        "usage": {
+            "prompt_tokens": input_tokens,
+            "completion_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+        },
+    }

@@ -118,8 +118,11 @@ try:
     _claude_types, _claude_converter, _claude_stream = _load_claude_modules()
     ClaudeRequest = _claude_types.ClaudeRequest
     convert_claude_to_amazonq_request = _claude_converter.convert_claude_to_amazonq_request
+    convert_openai_to_amazonq_request = _claude_converter.convert_openai_to_amazonq_request
     map_model_name = _claude_converter.map_model_name
     ClaudeStreamHandler = _claude_stream.ClaudeStreamHandler
+    claude_sse_to_openai_sse = _claude_stream.claude_sse_to_openai_sse
+    collect_openai_response = _claude_stream.collect_openai_response
 except Exception as e:
     print(f"Failed to load Claude modules: {e}")
     traceback.print_exc()
@@ -127,7 +130,10 @@ except Exception as e:
     class ClaudeRequest(BaseModel):
         pass
     convert_claude_to_amazonq_request = None
+    convert_openai_to_amazonq_request = None
     ClaudeStreamHandler = None
+    claude_sse_to_openai_sse = None
+    collect_openai_response = None
     def map_model_name(model: str) -> str:
         return model  # Fallback: return as-is
 
@@ -414,12 +420,23 @@ class BatchAccountUpdate(BaseModel):
 
 class ChatMessage(BaseModel):
     role: str
-    content: Any
+    content: Any = None
+    tool_calls: Optional[List[Dict[str, Any]]] = None
+    tool_call_id: Optional[str] = None
+    name: Optional[str] = None
 
 class ChatCompletionRequest(BaseModel):
     model: Optional[str] = None
     messages: List[ChatMessage]
     stream: Optional[bool] = False
+    tools: Optional[List[Dict[str, Any]]] = None
+    tool_choice: Optional[Any] = None
+    response_format: Optional[Dict[str, Any]] = None
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    max_tokens: Optional[int] = None
+    max_completion_tokens: Optional[int] = None
+    reasoning_effort: Optional[str] = None
 
 # ------------------------------------------------------------------------------
 # Token refresh (OIDC)
@@ -828,132 +845,126 @@ async def count_tokens_endpoint(req: ClaudeRequest):
     return {"input_tokens": input_tokens}
 
 @app.post("/v1/chat/completions")
-async def chat_completions(req: ChatCompletionRequest, account: Dict[str, Any] = Depends(require_account)):
-    """
-    OpenAI-compatible chat endpoint.
-    - stream default False
-    - messages will be converted into "{role}:\n{content}" and injected into template
-    - account is chosen randomly among enabled accounts (API key is for authorization only)
-    """
-    # Map canonical model names (e.g., claude-haiku-4-5-20251001) to short names (e.g., claude-haiku-4.5)
-    model = map_model_name(req.model) if req.model else None
+async def chat_completions(
+    req: ChatCompletionRequest,
+    account: Dict[str, Any] = Depends(require_account),
+    anthropic_beta: Optional[str] = Header(default=None, alias="Anthropic-Beta"),
+):
+    """OpenAI-compatible chat endpoint — full Kiro pipeline."""
+    request_headers = {}
+    if anthropic_beta:
+        request_headers["Anthropic-Beta"] = anthropic_beta
+
+    model = map_model_name(req.model) if req.model else "auto"
     do_stream = bool(req.stream)
 
-    async def _send_upstream(stream: bool) -> Tuple[Optional[str], Optional[AsyncGenerator[str, None]], Any]:
+    # 1. Convert to Kiro payload
+    try:
+        aq_request = convert_openai_to_amazonq_request(req, headers=request_headers)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=400, detail=f"Request conversion failed: {str(e)}")
+
+    # 2. Send upstream (always stream to get event_iter)
+    event_iter = None
+    try:
         access = account.get("accessToken")
         if not access:
             refreshed = await refresh_access_token_in_db(account["id"])
             access = refreshed.get("accessToken")
             if not access:
                 raise HTTPException(status_code=502, detail="Access token unavailable after refresh")
-        # Note: send_chat_request signature changed, but we use keyword args so it should be fine if we don't pass raw_payload
-        # But wait, the return signature changed too! It now returns 4 values.
-        # We need to unpack 4 values.
-        result = await send_chat_request(access, [m.model_dump() for m in req.messages], model=model, stream=stream, client=GLOBAL_CLIENT)
-        return result[0], result[1], result[2] # Ignore the 4th value (event_stream) for OpenAI endpoint
 
-    if not do_stream:
+        _, _, tracker, event_iter = await send_chat_request(
+            access_token=access,
+            messages=[],
+            model=req.model,
+            stream=True,
+            client=GLOBAL_CLIENT,
+            raw_payload=aq_request,
+        )
+        if not event_iter:
+            raise HTTPException(status_code=502, detail="No event stream returned")
+
+        # Calculate input tokens from the actual payload content
+        text_to_count = aq_request.get("conversationState", {}).get("currentMessage", {}).get("userInputMessage", {}).get("content", "")
+        current_ctx = aq_request.get("conversationState", {}).get("currentMessage", {}).get("userInputMessage", {}).get("userInputMessageContext", {})
+        for h in aq_request.get("conversationState", {}).get("history", []):
+            if "userInputMessage" in h:
+                text_to_count += h["userInputMessage"].get("content", "")
+                h_ctx = h["userInputMessage"].get("userInputMessageContext", {})
+                if h_ctx.get("toolResults"):
+                    text_to_count += json.dumps(h_ctx["toolResults"], ensure_ascii=False)
+            elif "assistantResponseMessage" in h:
+                text_to_count += h["assistantResponseMessage"].get("content", "")
+                if h["assistantResponseMessage"].get("toolUses"):
+                    text_to_count += json.dumps(h["assistantResponseMessage"]["toolUses"], ensure_ascii=False)
+        # Include tool definitions
+        if current_ctx.get("tools"):
+            text_to_count += json.dumps(current_ctx["tools"], ensure_ascii=False)
+        # Include current turn tool results
+        if current_ctx.get("toolResults"):
+            text_to_count += json.dumps(current_ctx["toolResults"], ensure_ascii=False)
+        input_tokens = count_tokens(text_to_count, apply_multiplier=True)
+
+        handler = ClaudeStreamHandler(model=req.model or "auto", input_tokens=input_tokens)
+
+        # First-event validation (proper HTTP error codes before streaming)
+        first_event = None
         try:
-            # Calculate prompt tokens
-            prompt_text = "".join([m.content for m in req.messages if isinstance(m.content, str)])
-            prompt_tokens = count_tokens(prompt_text)
-
-            text, _, tracker = await _send_upstream(stream=False)
-            await _update_stats(account["id"], bool(text))
-            
-            completion_tokens = count_tokens(text or "")
-            
-            return JSONResponse(content=_openai_non_streaming_response(
-                text or "",
-                model,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens
-            ))
+            first_event = await event_iter.__anext__()
+        except StopAsyncIteration:
+            raise HTTPException(status_code=502, detail="Empty response from upstream")
         except Exception as e:
-            if not _is_transient_upstream_error(e):
-                await _update_stats(account["id"], False)
-            status = _extract_upstream_status(e)
-            if status:
-                raise HTTPException(status_code=status, detail=str(e))
-            raise
-    else:
+            raise HTTPException(status_code=502, detail=f"Upstream error: {str(e)}")
+
+        # Claude SSE generator (reuses ClaudeStreamHandler)
+        async def _claude_sse_gen():
+            if first_event:
+                event_type, payload = first_event
+                async for sse in handler.handle_event(event_type, payload):
+                    yield sse
+            async for event_type, payload in event_iter:
+                async for sse in handler.handle_event(event_type, payload):
+                    yield sse
+            async for sse in handler.finish():
+                yield sse
+
         created = int(time.time())
         stream_id = f"chatcmpl-{uuid.uuid4()}"
-        model_used = model or "unknown"
-        
-        it = None
-        try:
-            # Calculate prompt tokens
-            prompt_text = "".join([m.content for m in req.messages if isinstance(m.content, str)])
-            prompt_tokens = count_tokens(prompt_text)
 
-            _, it, tracker = await _send_upstream(stream=True)
-            assert it is not None
-            
-            async def event_gen() -> AsyncGenerator[str, None]:
-                completion_text = ""
+        if do_stream:
+            async def openai_event_gen():
                 try:
-                    # Send role first
-                    yield _sse_format({
-                        "id": stream_id,
-                        "object": "chat.completion.chunk",
-                        "created": created,
-                        "model": model_used,
-                        "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
-                    })
-                    
-                    # Stream content
-                    async for piece in it:
-                        if piece:
-                            completion_text += piece
-                            yield _sse_format({
-                                "id": stream_id,
-                                "object": "chat.completion.chunk",
-                                "created": created,
-                                "model": model_used,
-                                "choices": [{"index": 0, "delta": {"content": piece}, "finish_reason": None}],
-                            })
-                    
-                    # Send stop and usage
-                    completion_tokens = count_tokens(completion_text)
-                    yield _sse_format({
-                        "id": stream_id,
-                        "object": "chat.completion.chunk",
-                        "created": created,
-                        "model": model_used,
-                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-                        "usage": {
-                            "prompt_tokens": prompt_tokens,
-                            "completion_tokens": completion_tokens,
-                            "total_tokens": prompt_tokens + completion_tokens,
-                        }
-                    })
-                    
-                    yield "data: [DONE]\n\n"
+                    async for chunk in claude_sse_to_openai_sse(_claude_sse_gen(), model, stream_id, created):
+                        yield chunk
                     await _update_stats(account["id"], True)
                 except GeneratorExit:
-                    # Client disconnected - update stats but don't re-raise
                     await _update_stats(account["id"], tracker.has_content if tracker else False)
                 except Exception:
-                    await _update_stats(account["id"], tracker.has_content if tracker else False)
+                    await _update_stats(account["id"], False)
                     raise
-            
-            return StreamingResponse(event_gen(), media_type="text/event-stream")
-        except Exception as e:
-            # Ensure iterator (if created) is closed to release upstream connection
-            try:
-                if it and hasattr(it, "aclose"):
-                    await it.aclose()
-            except Exception:
-                pass
-            if not _is_transient_upstream_error(e):
-                await _update_stats(account["id"], False)
 
-            # Extract upstream status code from "Upstream error {code}: {message}"
-            status = _extract_upstream_status(e)
-            if status:
-                raise HTTPException(status_code=status, detail=str(e))
-            raise
+            return StreamingResponse(openai_event_gen(), media_type="text/event-stream")
+        else:
+            # Non-streaming: accumulate full response
+            try:
+                result = await collect_openai_response(_claude_sse_gen(), model, stream_id, created)
+                await _update_stats(account["id"], True)
+                return JSONResponse(content=result)
+            except Exception:
+                await _update_stats(account["id"], False)
+                raise
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        if not _is_transient_upstream_error(e):
+            await _update_stats(account["id"], False)
+        status = _extract_upstream_status(e)
+        if status:
+            raise HTTPException(status_code=status, detail=str(e))
+        raise
 
 # ------------------------------------------------------------------------------
 # Device Authorization (URL Login, 5-minute timeout)
@@ -1344,7 +1355,7 @@ if CONSOLE_ENABLED:
             if not candidates:
                 raise HTTPException(status_code=503, detail="No enabled account available")
             account = random.choice(candidates)
-        return await chat_completions(req, account)
+        return await chat_completions(req, account, anthropic_beta=None)
 
     # ------------------------------------------------------------------------------
     # Simple Frontend (minimal dev test page; full UI in v2/frontend/index.html)
