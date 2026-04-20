@@ -25,9 +25,15 @@
 ### Models Supported
 ```
 auto, claude-sonnet-4, claude-sonnet-4.5, claude-sonnet-4.6, claude-haiku-4.5, claude-opus-4.5, claude-opus-4.6
+deepseek-3.2, minimax-m2.1, minimax-m2.5, glm-5, qwen3-coder-next
 + Agentic variants: claude-opus-4.5-agentic, etc.
 + Chat-only variants: claude-opus-4.5-chat, etc.
++ CLIProxy-style aliases: kiro-deepseek-3-2, kiro-minimax-m2-1, kiro-minimax-m2-5, kiro-glm-5, kiro-qwen3-coder-next
 ```
+
+Capability note:
+- `glm-5` and `minimax-m2.5` are treated as text-only models and reject image inputs during request conversion.
+- Live verification on 2026-04-20 confirmed the current `AI_EDITOR` request path can return responses for `deepseek-3.2`, `minimax-m2.1`, `minimax-m2.5`, `glm-5`, and the matching `kiro-*` aliases.
 
 ## ❌ Not Implemented (CLIProxyAPIPlus only)
 

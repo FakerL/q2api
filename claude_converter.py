@@ -96,6 +96,91 @@ REMEMBER: When in doubt, write LESS per operation. Multiple small operations > o
 # Web search tool renaming - Kiro API uses remote_web_search instead of web_search
 REMOTE_WEB_SEARCH_DESCRIPTION = "WebSearch looks up information outside the model's training data. Supports multiple queries to gather comprehensive information."
 
+MODEL_VARIANT_SUFFIXES = ("-agentic", "-chat")
+
+# Known upstream Kiro model IDs and aliases observed in the current local investigations.
+KNOWN_UPSTREAM_MODEL_IDS = {
+    "auto",
+    "claude-sonnet-4",
+    "claude-sonnet-4.5",
+    "claude-sonnet-4.6",
+    "claude-haiku-4.5",
+    "claude-opus-4.5",
+    "claude-opus-4.6",
+    "deepseek-3.2",
+    "minimax-m2.1",
+    "minimax-m2.5",
+    "glm-5",
+    "qwen3-coder-next",
+}
+
+MODEL_ALIAS_TO_UPSTREAM = {
+    # Anthropic canonical names
+    "claude-sonnet-4-20250514": "claude-sonnet-4",
+    "claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
+    "claude-sonnet-4-6-20260217": "claude-sonnet-4.6",
+    "claude-haiku-4-5-20251001": "claude-haiku-4.5",
+    "claude-opus-4-5-20251101": "claude-opus-4.5",
+    "claude-opus-4-6-20260201": "claude-opus-4.6",
+    # Hyphenated variants
+    "claude-opus-4-5": "claude-opus-4.5",
+    "claude-opus-4-6": "claude-opus-4.6",
+    "claude-sonnet-4-5": "claude-sonnet-4.5",
+    "claude-sonnet-4-6": "claude-sonnet-4.6",
+    "claude-haiku-4-5": "claude-haiku-4.5",
+    "deepseek-3-2": "deepseek-3.2",
+    "minimax-m2-1": "minimax-m2.1",
+    "minimax-m2-5": "minimax-m2.5",
+    # CLIProxyAPIPlus-style internal IDs
+    "kiro-auto": "auto",
+    "kiro-claude-sonnet-4": "claude-sonnet-4",
+    "kiro-claude-sonnet-4-5": "claude-sonnet-4.5",
+    "kiro-claude-sonnet-4-6": "claude-sonnet-4.6",
+    "kiro-claude-haiku-4-5": "claude-haiku-4.5",
+    "kiro-claude-opus-4-5": "claude-opus-4.5",
+    "kiro-claude-opus-4-6": "claude-opus-4.6",
+    "kiro-deepseek-3-2": "deepseek-3.2",
+    "kiro-minimax-m2-1": "minimax-m2.1",
+    "kiro-minimax-m2-5": "minimax-m2.5",
+    "kiro-glm-5": "glm-5",
+    "kiro-qwen3-coder-next": "qwen3-coder-next",
+}
+
+TEXT_ONLY_KIRO_MODELS = {
+    "glm-5",
+    "minimax-m2.5",
+}
+
+
+def _strip_model_variant_suffixes(model_name: str) -> str:
+    normalized = (model_name or "").lower()
+    for suffix in MODEL_VARIANT_SUFFIXES:
+        if suffix in normalized:
+            normalized = normalized.replace(suffix, "")
+    return normalized
+
+
+def _content_has_images(content: Any) -> bool:
+    if content is None:
+        return False
+    if isinstance(content, list):
+        return any(_content_has_images(item) for item in content)
+    if isinstance(content, dict):
+        if content.get("type") in ("image", "image_url"):
+            return True
+        for key in ("content", "source", "image_url"):
+            if key in content and _content_has_images(content[key]):
+                return True
+    return False
+
+
+def validate_model_capabilities(model_id: str, messages: List[Any]) -> None:
+    """Reject request shapes the current Kiro catalog marks as unsupported."""
+    if model_id in TEXT_ONLY_KIRO_MODELS:
+        for msg in messages or []:
+            if _content_has_images(getattr(msg, "content", None)):
+                raise ValueError(f"Model '{model_id}' is text-only and does not support image inputs")
+
 
 def calculate_tools_size(tools: List[Dict[str, Any]]) -> int:
     """Calculate the JSON serialized size of the tools list."""
@@ -376,52 +461,22 @@ def map_model_name(claude_model: str) -> str:
     """Map Claude model name to Amazon Q model ID.
 
     Accepts both short names (e.g., claude-sonnet-4) and canonical names
-    (e.g., claude-sonnet-4-20250514).
+    (e.g., claude-sonnet-4-20250514), plus CLIProxyAPIPlus-style kiro aliases.
     """
     DEFAULT_MODEL = "auto"
 
-    # Available models in the service (aligned with CLIProxyAPIPlus)
-    VALID_MODELS = {
-        "auto",
-        "claude-sonnet-4",
-        "claude-sonnet-4.5",
-        "claude-sonnet-4.6",
-        "claude-haiku-4.5",
-        "claude-opus-4.5",
-        "claude-opus-4.6",
-    }
+    if not claude_model:
+        return DEFAULT_MODEL
 
-    # Mapping from canonical names to AWS model IDs
-    CANONICAL_TO_SHORT = {
-        # Anthropic canonical names
-        "claude-sonnet-4-20250514": "claude-sonnet-4",
-        "claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
-        "claude-sonnet-4-6-20260217": "claude-sonnet-4.6",
-        "claude-haiku-4-5-20251001": "claude-haiku-4.5",
-        "claude-opus-4-5-20251101": "claude-opus-4.5",
-        "claude-opus-4-6-20260201": "claude-opus-4.6",
-        # Hyphenated variants (kiro format)
-        "claude-opus-4-5": "claude-opus-4.5",
-        "claude-opus-4-6": "claude-opus-4.6",
-        "claude-sonnet-4-5": "claude-sonnet-4.5",
-        "claude-sonnet-4-6": "claude-sonnet-4.6",
-        "claude-haiku-4-5": "claude-haiku-4.5",
-    }
-
-    model_lower = claude_model.lower()
-
-    # Strip -agentic/-chat suffix for model resolution (handled separately)
-    for suffix in ("-agentic", "-chat"):
-        if suffix in model_lower:
-            model_lower = model_lower.replace(suffix, "")
+    model_lower = _strip_model_variant_suffixes(claude_model)
 
     # Check if it's a valid short name
-    if model_lower in VALID_MODELS:
+    if model_lower in KNOWN_UPSTREAM_MODEL_IDS:
         return model_lower
 
     # Check if it's a canonical name
-    if model_lower in CANONICAL_TO_SHORT:
-        return CANONICAL_TO_SHORT[model_lower]
+    if model_lower in MODEL_ALIAS_TO_UPSTREAM:
+        return MODEL_ALIAS_TO_UPSTREAM[model_lower]
 
     # Unknown model - pass through as-is (upstream supports many models)
     logger.info(f"Passing through unknown model '{claude_model}' as-is")
@@ -798,6 +853,8 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
     # Check model variants
     is_agentic = is_agentic_model(req.model)
     is_chat_only = is_chat_only_model(req.model)
+    model_id = map_model_name(req.model)
+    validate_model_capabilities(model_id, req.messages)
 
     # Extract inference parameters
     max_tokens = getattr(req, 'max_tokens', None)
@@ -964,10 +1021,7 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
 
     logger.debug(f"Final content length: {len(formatted_content)}, has_tool_result: {has_tool_result}, prompt_content_len: {len(prompt_content)}")
 
-    # 8. Model
-    model_id = map_model_name(req.model)
-
-    # 9. User Input Message - use normalized origin
+    # 8. User Input Message - use normalized origin
     user_input_msg = {
         "content": formatted_content,
         "userInputMessageContext": user_ctx,
@@ -1126,6 +1180,8 @@ def convert_openai_to_amazonq_request(
                         system_text += ("\n" + b["text"] if system_text else b["text"])
         else:
             non_system_msgs.append(m)
+
+    validate_model_capabilities(model_id, non_system_msgs)
 
     adapter = _OpenAIReqAdapter(model_raw, system_text, getattr(req, 'reasoning_effort', None))
     thinking = is_thinking_enabled(adapter, headers)

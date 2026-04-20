@@ -20,6 +20,7 @@
 - **Claude Messages API** - 完全兼容 `/v1/messages` 端点，支持流式和非流式
 - **Tool Use 支持** - 完整支持 Claude 格式的工具调用和结果返回
 - **System Prompt** - 支持系统提示词和多模态内容（文本、图片）
+- **模型别名支持** - 支持 Claude 系列，以及 `deepseek-3.2`、`minimax-m2.1`、`minimax-m2.5`、`glm-5` 的 upstream ID 与 `kiro-*` 别名
 
 ### 账号管理
 - **多账号支持** - 管理多个 Amazon Q 账号，灵活启用/禁用
@@ -242,6 +243,13 @@ curl -X DELETE http://localhost:8000/v2/accounts/{account_id} \
 ```
 
 ### OpenAI 兼容 API
+
+支持的模型 ID：
+- Claude：`auto`、`claude-sonnet-4`、`claude-sonnet-4.5`、`claude-sonnet-4.6`、`claude-haiku-4.5`、`claude-opus-4.5`、`claude-opus-4.6`
+- 新增：`deepseek-3.2`、`minimax-m2.1`、`minimax-m2.5`、`glm-5`
+- 兼容 `CLIProxyAPIPlus` 风格别名：例如 `kiro-deepseek-3-2`、`kiro-minimax-m2-5`、`kiro-glm-5`
+- 当前按 2026-04-20 的本地 Kiro CLI 调查，`glm-5` 与 `minimax-m2.5` 是 `TEXT` only；q2api 现在会在本地直接拒绝图片输入，而不是把请求发到上游后再失败
+- 已于 2026-04-20 用真实账号验证：当前 `AI_EDITOR` 风格上游请求可以成功返回 `deepseek-3.2`、`minimax-m2.1`、`minimax-m2.5`、`glm-5`，以及对应的 `kiro-*` 别名
 
 #### 非流式请求
 

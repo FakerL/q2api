@@ -10,16 +10,19 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from claude_converter import (
     convert_openai_to_amazonq_request,
+    convert_claude_to_amazonq_request,
     convert_openai_tool,
     _merge_adjacent_openai_messages,
     _convert_openai_messages_to_kiro,
     _extract_openai_tool_choice_hint,
     _build_response_format_hint,
+    map_model_name,
     DEFAULT_USER_CONTENT,
     DEFAULT_USER_CONTENT_WITH_TOOL_RESULTS,
     DEFAULT_ASSISTANT_CONTENT,
     DEFAULT_ASSISTANT_CONTENT_WITH_TOOLS,
 )
+from claude_types import ClaudeRequest
 from claude_stream import (
     claude_sse_to_openai_sse,
     collect_openai_response,
@@ -524,3 +527,66 @@ def test_large_json_schema_truncates_safely():
     # Schema portion should be roughly 503 chars (500 + "...")
     schema_line = [l for l in hint.split("\n") if l.startswith("{")][0]
     assert len(schema_line) == 503
+
+
+# ============================================================
+# Model alias support for deepseek / minimax / glm
+# ============================================================
+
+def test_non_claude_model_aliases_resolve_to_upstream_ids():
+    assert map_model_name("deepseek-3.2") == "deepseek-3.2"
+    assert map_model_name("deepseek-3-2") == "deepseek-3.2"
+    assert map_model_name("kiro-deepseek-3-2-agentic") == "deepseek-3.2"
+
+    assert map_model_name("minimax-m2.1") == "minimax-m2.1"
+    assert map_model_name("minimax-m2-1") == "minimax-m2.1"
+    assert map_model_name("kiro-minimax-m2-1-chat") == "minimax-m2.1"
+
+    assert map_model_name("minimax-m2.5") == "minimax-m2.5"
+    assert map_model_name("minimax-m2-5") == "minimax-m2.5"
+    assert map_model_name("kiro-minimax-m2-5") == "minimax-m2.5"
+
+    assert map_model_name("glm-5") == "glm-5"
+    assert map_model_name("kiro-glm-5-agentic") == "glm-5"
+
+
+def test_deepseek_image_input_still_allowed():
+    req = _Req(messages=[_Msg("user", [
+        {"type": "text", "text": "describe this"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}},
+    ])], model="deepseek-3.2")
+    result = convert_openai_to_amazonq_request(req)
+    current = result["conversationState"]["currentMessage"]["userInputMessage"]
+    assert current["modelId"] == "deepseek-3.2"
+    assert current.get("images")
+
+
+def test_openai_text_only_model_rejects_image_input():
+    req = _Req(messages=[_Msg("user", [
+        {"type": "text", "text": "describe this"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}},
+    ])], model="glm-5")
+    with pytest.raises(ValueError, match="text-only"):
+        convert_openai_to_amazonq_request(req)
+
+
+def test_claude_text_only_model_rejects_image_input():
+    req = ClaudeRequest(
+        model="minimax-m2.5",
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe this"},
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "iVBORw0KGgo=",
+                    },
+                },
+            ],
+        }],
+    )
+    with pytest.raises(ValueError, match="text-only"):
+        convert_claude_to_amazonq_request(req)
