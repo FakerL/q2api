@@ -199,6 +199,7 @@ async def _close_global_client():
 
 # Database backend instance (initialized on startup)
 _db = None
+_LABEL_UPSERT_LOCKS: Dict[str, asyncio.Lock] = {}
 
 async def _ensure_db():
     """Initialize database backend."""
@@ -208,6 +209,19 @@ async def _ensure_db():
 def _row_to_dict(r: Dict[str, Any]) -> Dict[str, Any]:
     """Convert database row to dict with JSON parsing."""
     return row_to_dict(r)
+
+def _normalize_label(label: Optional[str]) -> Optional[str]:
+    if label is None:
+        return None
+    label = label.strip()
+    return label or None
+
+def _get_label_upsert_lock(label: str) -> asyncio.Lock:
+    lock = _LABEL_UPSERT_LOCKS.get(label)
+    if lock is None:
+        lock = asyncio.Lock()
+        _LABEL_UPSERT_LOCKS[label] = lock
+    return lock
 
 # _ensure_db() will be called in startup event
 
@@ -998,6 +1012,103 @@ class AdminLoginResponse(BaseModel):
     success: bool
     message: str
 
+async def _create_or_update_account_by_label(
+    *,
+    label: Optional[str],
+    dedupe_by_label: bool = True,
+    client_id: str,
+    client_secret: str,
+    refresh_token: Optional[str],
+    access_token: Optional[str],
+    other: Optional[Dict[str, Any]],
+    enabled: bool,
+    last_refresh_time: Optional[str],
+    last_refresh_status: str,
+    reset_error_count: bool = False,
+) -> Dict[str, Any]:
+    label = _normalize_label(label)
+    now = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+    other_str = json.dumps(other, ensure_ascii=False) if other is not None else None
+
+    async def write_account() -> Dict[str, Any]:
+        if label and dedupe_by_label:
+            existing = await _db.fetchone(
+                "SELECT * FROM accounts WHERE label=? ORDER BY created_at ASC, id ASC LIMIT 1",
+                (label,),
+            )
+            if existing:
+                fields = [
+                    "clientId=?",
+                    "clientSecret=?",
+                    "enabled=?",
+                    "expires_at=?",
+                    "updated_at=?",
+                ]
+                values: List[Any] = [
+                    client_id,
+                    client_secret,
+                    1 if enabled else 0,
+                    None,
+                    now,
+                ]
+
+                if refresh_token is not None:
+                    fields.append("refreshToken=?")
+                    values.append(refresh_token)
+                if access_token is not None:
+                    fields.append("accessToken=?")
+                    values.append(access_token)
+                if other is not None:
+                    fields.append("other=?")
+                    values.append(other_str)
+                if last_refresh_time is not None:
+                    fields.append("last_refresh_time=?")
+                    values.append(last_refresh_time)
+                if last_refresh_status:
+                    fields.append("last_refresh_status=?")
+                    values.append(last_refresh_status)
+                if reset_error_count:
+                    fields.append("error_count=0")
+
+                acc_id = existing["id"]
+                values.append(acc_id)
+                await _db.execute(
+                    f"UPDATE accounts SET {', '.join(fields)} WHERE id=?",
+                    tuple(values),
+                )
+                row = await _db.fetchone("SELECT * FROM accounts WHERE id=?", (acc_id,))
+                return _row_to_dict(row)
+
+        acc_id = str(uuid.uuid4())
+        await _db.execute(
+            """
+            INSERT INTO accounts (id, label, clientId, clientSecret, refreshToken, accessToken, other, last_refresh_time, last_refresh_status, created_at, updated_at, enabled, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                acc_id,
+                label,
+                client_id,
+                client_secret,
+                refresh_token,
+                access_token,
+                other_str,
+                last_refresh_time,
+                last_refresh_status,
+                now,
+                now,
+                1 if enabled else 0,
+                None,
+            ),
+        )
+        row = await _db.fetchone("SELECT * FROM accounts WHERE id=?", (acc_id,))
+        return _row_to_dict(row)
+
+    if label and dedupe_by_label:
+        async with _get_label_upsert_lock(label):
+            return await write_account()
+    return await write_account()
+
 async def _create_account_from_tokens(
     client_id: str,
     client_secret: str,
@@ -1007,30 +1118,18 @@ async def _create_account_from_tokens(
     enabled: bool,
 ) -> Dict[str, Any]:
     now = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
-    acc_id = str(uuid.uuid4())
-    await _db.execute(
-        """
-        INSERT INTO accounts (id, label, clientId, clientSecret, refreshToken, accessToken, other, last_refresh_time, last_refresh_status, created_at, updated_at, enabled, expires_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            acc_id,
-            label,
-            client_id,
-            client_secret,
-            refresh_token,
-            access_token,
-            None,
-            now,
-            "success",
-            now,
-            now,
-            1 if enabled else 0,
-            None,  # expires_at - will be set on first refresh
-        ),
+    return await _create_or_update_account_by_label(
+        label=label,
+        client_id=client_id,
+        client_secret=client_secret,
+        refresh_token=refresh_token,
+        access_token=access_token,
+        other=None,
+        enabled=enabled,
+        last_refresh_time=now,
+        last_refresh_status="success",
+        reset_error_count=True,
     )
-    row = await _db.fetchone("SELECT * FROM accounts WHERE id=?", (acc_id,))
-    return _row_to_dict(row)
 
 # 管理控制台相关端点 - 仅在启用时注册
 if CONSOLE_ENABLED:
@@ -1177,33 +1276,18 @@ if CONSOLE_ENABLED:
 
     @app.post("/v2/accounts")
     async def create_account(body: AccountCreate, _: bool = Depends(verify_admin_password)):
-        now = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
-        acc_id = str(uuid.uuid4())
-        other_str = json.dumps(body.other, ensure_ascii=False) if body.other is not None else None
         enabled_val = 1 if (body.enabled is None or body.enabled) else 0
-        await _db.execute(
-            """
-            INSERT INTO accounts (id, label, clientId, clientSecret, refreshToken, accessToken, other, last_refresh_time, last_refresh_status, created_at, updated_at, enabled, expires_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                acc_id,
-                body.label,
-                body.clientId,
-                body.clientSecret,
-                body.refreshToken,
-                body.accessToken,
-                other_str,
-                None,
-                "never",
-                now,
-                now,
-                enabled_val,
-                None,  # expires_at - will be set on first refresh
-            ),
+        return await _create_or_update_account_by_label(
+            label=body.label,
+            client_id=body.clientId,
+            client_secret=body.clientSecret,
+            refresh_token=body.refreshToken,
+            access_token=body.accessToken,
+            other=body.other,
+            enabled=bool(enabled_val),
+            last_refresh_time=None,
+            last_refresh_status="never",
         )
-        row = await _db.fetchone("SELECT * FROM accounts WHERE id=?", (acc_id,))
-        return _row_to_dict(row)
 
 
     async def _verify_and_enable_accounts(account_ids: List[str]):
@@ -1230,37 +1314,25 @@ if CONSOLE_ENABLED:
         """
         统一的投喂接口，接收账号列表，立即存入并后台异步验证。
         """
-        now = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
         new_account_ids = []
 
         for i, account_data in enumerate(request.accounts):
-            acc_id = str(uuid.uuid4())
             other_dict = account_data.other or {}
             other_dict['source'] = 'feed'
-            other_str = json.dumps(other_dict, ensure_ascii=False)
-
-            await _db.execute(
-                """
-                INSERT INTO accounts (id, label, clientId, clientSecret, refreshToken, accessToken, other, last_refresh_time, last_refresh_status, created_at, updated_at, enabled, expires_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    acc_id,
-                    account_data.label or f"批量账号 {i+1}",
-                    account_data.clientId,
-                    account_data.clientSecret,
-                    account_data.refreshToken,
-                    account_data.accessToken,
-                    other_str,
-                    None,
-                    "never",
-                    now,
-                    now,
-                    0,  # 初始为禁用状态
-                    None,  # expires_at - will be set on first refresh
-                ),
+            provided_label = _normalize_label(account_data.label)
+            account = await _create_or_update_account_by_label(
+                label=provided_label or f"批量账号 {i+1}",
+                dedupe_by_label=provided_label is not None,
+                client_id=account_data.clientId,
+                client_secret=account_data.clientSecret,
+                refresh_token=account_data.refreshToken,
+                access_token=account_data.accessToken,
+                other=other_dict,
+                enabled=False,
+                last_refresh_time=None,
+                last_refresh_status="never",
             )
-            new_account_ids.append(acc_id)
+            new_account_ids.append(account["id"])
 
         # 启动后台任务进行验证，不阻塞当前请求
         if new_account_ids:

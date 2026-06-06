@@ -233,7 +233,7 @@ async def auth_claim(auth_id: str):
             "clientSecret": session["clientSecret"],
             "refreshToken": tokens.get("refreshToken"),
             "accessToken": tokens.get("accessToken"),
-            "enabled": False,
+            "enabled": bool(session.get("enabled", True)),
         }
 
         headers = {"content-type": "application/json"}
@@ -270,7 +270,7 @@ async def create_account(account: AccountCreate):
     """创建单个账号（调用主服务统一feed接口）"""
     try:
         account_data = {
-            "label": account.label or "手动投喂账号",
+            "label": account.label,
             "clientId": account.clientId,
             "clientSecret": account.clientSecret,
             "refreshToken": account.refreshToken,
